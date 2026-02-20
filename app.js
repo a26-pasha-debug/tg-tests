@@ -1,5 +1,5 @@
 // ====== CONFIG ======
-const API_BASE = "https://https://mlmotiv.app.n8n.cloud/"; // пример: https://xxxx.app.n8n.cloud/webhook
+const API_BASE = "https://mlmotiv.app.n8n.cloud/webhook"; // пример: https://xxxx.app.n8n.cloud/webhook
 const EP = {
   tests: "tg-tests",
   start: "tg-start",
