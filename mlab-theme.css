@@ -1,0 +1,180 @@
+/* ===========================
+   MLab Theme Override (only colors)
+   Добавь в конец styles.css
+   или в отдельный mlab-theme.css
+   =========================== */
+
+body.theme-mlab{
+  --ml-accent: #FFD200;          /* жёлтый */
+  --ml-accent-ink: #141414;      /* текст на жёлтом */
+  --ml-bg: #F2F2F2;              /* общий фон */
+  --ml-surface: #FFFFFF;         /* белые карточки */
+  --ml-surface-2: #E9E9E9;       /* серые подложки */
+  --ml-ink: #1B1B1B;             /* основной текст */
+  --ml-muted: #7A7A7A;           /* вторичный текст */
+  --ml-dark: #4B4B4B;            /* тёмные порталы */
+  --ml-border: rgba(0,0,0,.08);
+  --ml-shadow: 0 10px 26px rgba(0,0,0,.10);
+
+  background: var(--ml-bg) !important;
+  color: var(--ml-ink) !important;
+}
+
+/* мягкий жёлтый “засвет” сверху как в твоих скринах */
+body.theme-mlab::before{
+  content:"";
+  position: fixed;
+  left:0; right:0; top:0;
+  height: 180px;
+  pointer-events:none;
+  background:
+    radial-gradient(140px 140px at 18% 10%, rgba(255,210,0,.55), rgba(255,210,0,0) 70%),
+    radial-gradient(180px 180px at 85% 0%, rgba(255,210,0,.40), rgba(255,210,0,0) 72%),
+    linear-gradient(180deg, rgba(255,210,0,.18), rgba(255,210,0,0) 70%);
+  z-index: -1;
+}
+
+/* базовые тексты */
+body.theme-mlab h1,
+body.theme-mlab h2,
+body.theme-mlab h3,
+body.theme-mlab .title{
+  color: var(--ml-ink) !important;
+}
+body.theme-mlab .muted,
+body.theme-mlab .sub,
+body.theme-mlab .subtitle,
+body.theme-mlab .meta{
+  color: var(--ml-muted) !important;
+}
+
+/* инпуты/поиск */
+body.theme-mlab input,
+body.theme-mlab textarea,
+body.theme-mlab select{
+  background: var(--ml-surface) !important;
+  color: var(--ml-ink) !important;
+  border: 1px solid var(--ml-border) !important;
+  border-radius: 16px;
+}
+body.theme-mlab input::placeholder,
+body.theme-mlab textarea::placeholder{
+  color: #9A9A9A !important;
+}
+
+/* чекбоксы/радио — простой и безопасный способ */
+body.theme-mlab input[type="checkbox"],
+body.theme-mlab input[type="radio"]{
+  accent-color: var(--ml-accent);
+}
+
+/* кнопки (не меняем layout, только вид) */
+body.theme-mlab button,
+body.theme-mlab .btn{
+  border-radius: 999px;
+}
+
+body.theme-mlab .btn.primary,
+body.theme-mlab .btn-primary,
+body.theme-mlab button.primary,
+body.theme-mlab button.btn-primary{
+  background: var(--ml-accent) !important;
+  color: var(--ml-accent-ink) !important;
+  border: 0 !important;
+  box-shadow: 0 10px 22px rgba(255,210,0,.25) !important;
+}
+
+body.theme-mlab .btn.secondary,
+body.theme-mlab .btn-secondary,
+body.theme-mlab button.secondary,
+body.theme-mlab button.btn-secondary{
+  background: var(--ml-surface-2) !important;
+  color: var(--ml-ink) !important;
+  border: 0 !important;
+}
+
+/* универсальные карточки */
+body.theme-mlab .card,
+body.theme-mlab .panel,
+body.theme-mlab .box,
+body.theme-mlab .container-card{
+  background: var(--ml-surface) !important;
+  color: var(--ml-ink) !important;
+  border: 1px solid var(--ml-border) !important;
+  box-shadow: var(--ml-shadow) !important;
+  border-radius: 22px;
+}
+
+/* вкладки/табы (подхватываем разные варианты классов) */
+body.theme-mlab .tabs,
+body.theme-mlab #tabs,
+body.theme-mlab .tabbar,
+body.theme-mlab .segmented{
+  background: var(--ml-surface-2) !important;
+  border-radius: 999px !important;
+  padding: 4px !important;
+  border: 1px solid rgba(255,255,255,.5);
+}
+
+body.theme-mlab .tabs button,
+body.theme-mlab #tabs button,
+body.theme-mlab .tabbar button,
+body.theme-mlab .segmented button{
+  background: transparent !important;
+  color: #5A5A5A !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  font-weight: 800;
+}
+
+body.theme-mlab .tabs button.active,
+body.theme-mlab #tabs button.active,
+body.theme-mlab .tabbar button.active,
+body.theme-mlab .segmented button.is-active,
+body.theme-mlab .segmented__btn.is-active{
+  background: var(--ml-accent) !important;
+  color: var(--ml-accent-ink) !important;
+}
+
+/* “портальные” карточки тестов (если у тебя тесты в кнопках/карточках списка)
+   Селекторы максимально безопасные: только перекрашиваем. */
+body.theme-mlab .test-card,
+body.theme-mlab .test-item,
+body.theme-mlab .portal-card,
+body.theme-mlab [data-test-id]{
+  background: var(--ml-dark) !important;
+  color: #fff !important;
+  border: 0 !important;
+  box-shadow: var(--ml-shadow) !important;
+  border-radius: 26px !important;
+}
+
+/* если внутри есть иконки svg — делаем жёлтыми */
+body.theme-mlab svg{
+  /* не принудительно для всех, но часто помогает */
+}
+body.theme-mlab .test-card svg,
+body.theme-mlab .test-item svg,
+body.theme-mlab .portal-card svg,
+body.theme-mlab [data-test-id] svg{
+  fill: var(--ml-accent) !important;
+}
+
+/* таймер/плашки */
+body.theme-mlab .timer,
+body.theme-mlab .timer-pill,
+body.theme-mlab .pill,
+body.theme-mlab .chip{
+  border-radius: 999px;
+}
+body.theme-mlab .timer,
+body.theme-mlab .timer-pill{
+  background: #2F2F2F !important;
+  color: #fff !important;
+}
+
+/* ссылки */
+body.theme-mlab a{
+  color: #1B1B1B;
+  text-decoration-color: rgba(0,0,0,.25);
+}
