@@ -18,8 +18,8 @@ const state = {
   timerId: null,
   autoSubmitted: false,
 
-  clockSkew: 0,      // clientNow - serverStartMs
-  expiresLocal: null,// expires_ms + clockSkew
+  clockSkew: 0,
+  expiresLocal: null,
 
   isSubmitting: false,
 };
@@ -43,14 +43,66 @@ function fmtTime(ms) {
 
 function escapeHtml(x) {
   return String(x ?? "").replace(/[&<>"']/g, (m) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[m]));
 }
 function escapeAttr(x) { return escapeHtml(x); }
+
+function toBool(v) {
+  if (typeof v === "boolean") return v;
+  if (typeof v === "number") return v !== 0;
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    if (["true","1","yes","y","да"].includes(s)) return true;
+    if (["false","0","no","n","нет",""].includes(s)) return false;
+  }
+  return false;
+}
+
+function cssEsc(s) {
+  try {
+    if (window.CSS && typeof CSS.escape === "function") return CSS.escape(String(s));
+  } catch {}
+  return String(s).replace(/["\\]/g, "\\$&");
+}
+
+/**
+ * Нормализуем ссылки, которые часто НЕ грузятся в мобильном Telegram:
+ * - //domain -> https://domain
+ * - http:// -> https://
+ * - Google Drive file link -> uc?export=view&id=
+ * - Dropbox dl=0 -> raw=1
+ * - GitHub blob -> raw.githubusercontent
+ */
+function normalizeImageUrl(urlRaw) {
+  let url = String(urlRaw || "").trim();
+  if (!url) return "";
+
+  if (url.startsWith("//")) url = "https:" + url;
+  if (url.startsWith("http://")) url = "https://" + url.slice("http://".length);
+
+  // google drive: https://drive.google.com/file/d/<id>/view?...
+  const mDrive = url.match(/drive\.google\.com\/file\/d\/([^/]+)\//i);
+  if (mDrive && mDrive[1]) {
+    url = `https://drive.google.com/uc?export=view&id=${mDrive[1]}`;
+  }
+
+  // dropbox
+  if (url.includes("dropbox.com") && url.includes("dl=0")) {
+    url = url.replace("dl=0", "raw=1");
+  }
+
+  // github blob -> raw
+  const mGh = url.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/(.+)$/i);
+  if (mGh) {
+    url = `https://raw.githubusercontent.com/${mGh[1]}/${mGh[2]}/${mGh[3]}`;
+  }
+
+  // аккуратно кодируем пробелы и кириллицу
+  try { url = encodeURI(url); } catch {}
+
+  return url;
+}
 
 // IMPORTANT: text/plain — меньше шансов на preflight OPTIONS
 async function api(path, data = {}) {
@@ -67,7 +119,6 @@ async function api(path, data = {}) {
 
   const text = await res.text();
 
-  // двойной parse на случай если бек вернул JSON-строку
   let json;
   try {
     json = JSON.parse(text);
@@ -114,6 +165,32 @@ function renderError(err) {
   el("btnBack").onclick = () => loadTests();
 }
 
+// ====== Attempts calculation for tests screen ======
+function calcAttemptsUsedByTest(results) {
+  const map = new Map(); // test_id -> Set(unique attempt keys)
+
+  for (const r of (results || [])) {
+    const testId = String(r.test_id || r.testId || "").trim();
+    if (!testId) continue;
+
+    const status = String(r.status || "").trim().toLowerCase();
+    if (!["submitted", "timeout"].includes(status)) continue;
+
+    const key =
+      String(r.attempt_no ?? "").trim() ||
+      String(r.session_token ?? "").trim() ||
+      String(r.start_ms ?? "").trim() ||
+      String(r.submit_ms ?? "").trim();
+
+    if (!key) continue;
+
+    if (!map.has(testId)) map.set(testId, new Set());
+    map.get(testId).add(key);
+  }
+
+  return map;
+}
+
 function renderTests() {
   stopTimer();
 
@@ -122,16 +199,12 @@ function renderTests() {
 
     const max = Number(t.max_attempts || 0);
     const used = Number(t.attempts_used || 0);
-
     const hasLimit = Number.isFinite(max) && max > 0;
+
     const canStart = !hasLimit || used < max;
 
-    // Показываем "номер следующей попытки / всего"
-    // Пример: used=0,max=2 -> 0/2
-    // used=1,max=2 -> 1/2
-    // used=2,max=2 -> 2/2 (и кнопки уже нет)
-    const attemptNo = hasLimit ? Math.min(used, max) : 1;
-
+    // "Попыток 1/2" (следующая попытка / всего)
+    const attemptNo = hasLimit ? Math.min(used + 1, max) : 1;
     const attemptsText = hasLimit ? `${attemptNo}/${max}` : "∞";
 
     return `
@@ -140,7 +213,6 @@ function renderTests() {
         <div class="muted" style="margin-top:6px;">
           Время: ${timeMin ? `${timeMin} мин` : "без лимита"} · Попыток: ${attemptsText}
         </div>
-
         <div style="margin-top:12px;">
           ${
             canStart
@@ -161,6 +233,23 @@ function renderTests() {
   setActiveTab("tests");
 }
 
+function syncAnswersFromDom(qid, isMulti) {
+  const qSel = cssEsc(qid);
+
+  if (isMulti) {
+    const checkedIds = Array.from(document.querySelectorAll(`input[data-q="${qSel}"][type="checkbox"]`))
+      .filter(x => x.checked)
+      .map(x => String(x.value || "").trim())
+      .filter(Boolean);
+
+    state.answers[qid] = checkedIds;
+  } else {
+    const picked = document.querySelector(`input[data-q="${qSel}"][type="radio"]:checked`);
+    const v = picked ? String(picked.value || "").trim() : "";
+    state.answers[qid] = v ? [v] : [];
+  }
+}
+
 function renderQuestion() {
   const s = state.session;
   if (!s || !Array.isArray(s.questions) || !s.questions.length) {
@@ -174,9 +263,17 @@ function renderQuestion() {
     return;
   }
 
+  const isLast = state.qIndex === s.questions.length - 1;
+
+  // ВАЖНО:
+  // чтобы радио/чекбоксы работали правильно — сервер должен прислать q.multi (true/false).
+  // Если q.multi не пришло — по умолчанию оставляем чекбоксы (чтобы не ломать мультивыбор).
+  const hasMultiFlag = (q.multi !== undefined && q.multi !== null);
+  const isMulti = hasMultiFlag ? toBool(q.multi) : true;
+
   const selected = new Set(state.answers[q.question_id] || []);
 
-  // дедуп ответов по answer_id (на случай дублей)
+  // дедуп вариантов по answer_id
   const seen = new Set();
   const answersList = (q.answers || []).filter(a => {
     const id = String(a?.answer_id || "").trim();
@@ -186,22 +283,44 @@ function renderQuestion() {
     return true;
   });
 
+  const inputType = isMulti ? "checkbox" : "radio";
+  const radioName = `q_${String(q.question_id || "").trim()}`;
+
   const answersHtml = answersList.map(a => {
     const aid = String(a.answer_id || "").trim();
     const atext = String(a.answer_text || "").trim();
     const checked = selected.has(aid) ? "checked" : "";
     return `
       <label>
-        <input type="checkbox" data-q="${escapeAttr(q.question_id)}" value="${escapeAttr(aid)}" ${checked} />
+        <input
+          type="${inputType}"
+          ${!isMulti ? `name="${escapeAttr(radioName)}"` : ""}
+          data-q="${escapeAttr(q.question_id)}"
+          value="${escapeAttr(aid)}"
+          ${checked}
+        />
         ${escapeHtml(atext)}
       </label>
     `;
   }).join("");
 
   const qText = String(q.question_text || "").trim();
-  const imgUrl = String(q.image_url || "").trim();
+  const imgUrl = normalizeImageUrl(q.image_url || "");
   const imgHtml = imgUrl
-    ? `<div class="q-media"><img class="q-img" src="${escapeAttr(imgUrl)}" alt="" loading="lazy" onerror="this.closest('.q-media')?.remove();" /></div>`
+    ? `
+      <div class="q-media" id="qMedia">
+        <img
+          class="q-img"
+          src="${escapeAttr(imgUrl)}"
+          alt=""
+          loading="eager"
+          decoding="async"
+          referrerpolicy="no-referrer"
+          crossorigin="anonymous"
+          onerror="(function(img){ try{ const box = img.closest('.q-media'); if(box){ box.innerHTML='<div class=muted style=padding:12px>Не удалось загрузить изображение</div>'; } }catch(e){} })(this)"
+        />
+      </div>
+    `
     : "";
 
   const progress = `${state.qIndex + 1} / ${s.questions.length}`;
@@ -209,6 +328,14 @@ function renderQuestion() {
   const attemptNo = Number(s.attempt_no || 1);
   const maxAttempts = Number(s?.test?.max_attempts || 0);
   const remainingAfter = maxAttempts > 0 ? Math.max(0, maxAttempts - attemptNo) : Number(s.remaining_attempts || 0);
+
+  const hasSelection = selected.size > 0;
+
+  // Кнопка "Далее" — нельзя, если не выбран ответ
+  const nextDisabled = (!hasSelection) || isLast;
+
+  // Кнопка "Отправить" — только на последнем вопросе и только если выбран ответ
+  const submitDisabled = (!hasSelection);
 
   el("main").innerHTML = `
     <div class="card">
@@ -228,32 +355,49 @@ function renderQuestion() {
 
       <div class="row" style="margin-top:12px;">
         <button class="btn secondary" id="btnPrev" ${state.qIndex === 0 ? "disabled" : ""}>Назад</button>
-        <button class="btn secondary" id="btnNext" ${state.qIndex === s.questions.length - 1 ? "disabled" : ""}>Далее</button>
+        <button class="btn secondary" id="btnNext" ${nextDisabled ? "disabled" : ""}>Далее</button>
       </div>
 
       <div class="row" style="margin-top:12px;">
-        <div class="muted">Попытка: ${attemptNo} · Осталось: ${remainingAfter}</div>
-        <button class="btn" id="btnSubmit">${state.qIndex === s.questions.length - 1 ? "Отправить" : "Отправить сейчас"}</button>
+        <div class="muted">Попытка: ${attemptNo}/${maxAttempts || "∞"} · Осталось: ${remainingAfter}</div>
+        ${isLast ? `<button class="btn" id="btnSubmit" ${submitDisabled ? "disabled" : ""}>Отправить</button>` : ""}
       </div>
     </div>
   `;
 
-  document.querySelectorAll('input[type="checkbox"][data-q]').forEach(inp => {
+  function updateButtons() {
+    const nowSelected = new Set(state.answers[q.question_id] || []);
+    const ok = nowSelected.size > 0;
+
+    const nextBtn = el("btnNext");
+    if (nextBtn) nextBtn.disabled = (!ok) || isLast;
+
+    const submitBtn = el("btnSubmit");
+    if (submitBtn) submitBtn.disabled = !ok;
+  }
+
+  // handlers
+  document.querySelectorAll(`input[data-q="${cssEsc(q.question_id)}"]`).forEach(inp => {
     inp.onchange = () => {
-      const qid = inp.getAttribute("data-q");
-      const safe = (window.CSS && CSS.escape) ? CSS.escape(qid) : qid.replace(/"/g, '\\"');
-
-      const checkedIds = Array.from(document.querySelectorAll(`input[data-q="${safe}"]`))
-        .filter(x => x.checked)
-        .map(x => x.value);
-
-      state.answers[qid] = checkedIds;
+      syncAnswersFromDom(q.question_id, isMulti);
+      updateButtons();
     };
   });
 
   el("btnPrev").onclick = () => { state.qIndex--; renderQuestion(); };
-  el("btnNext").onclick = () => { state.qIndex++; renderQuestion(); };
-  el("btnSubmit").onclick = () => submitCurrent(false);
+
+  el("btnNext").onclick = () => {
+    // защита на всякий случай
+    const arr = state.answers[q.question_id] || [];
+    if (!arr.length) return;
+    state.qIndex++;
+    renderQuestion();
+  };
+
+  const submitBtn = el("btnSubmit");
+  if (submitBtn) {
+    submitBtn.onclick = () => submitCurrent(false);
+  }
 
   startTimer();
 }
@@ -360,32 +504,6 @@ function stopTimer() {
   state.timerId = null;
 }
 
-function calcAttemptsUsedByTest(results) {
-  // test_id -> Set(unique attempts)
-  const map = new Map();
-
-  for (const r of (results || [])) {
-    const testId = String(r.test_id || r.testId || "").trim();
-    if (!testId) continue;
-
-    const status = String(r.status || "").trim().toLowerCase();
-    // попыткой считаем только submit/timeout (как на бэке)
-    if (!["submitted", "timeout"].includes(status)) continue;
-
-    const attemptKey =
-      String(r.attempt_no ?? "").trim() ||
-      String(r.session_token ?? "").trim() ||
-      String(r.start_ms ?? "").trim() ||
-      String(r.submit_ms ?? "").trim();
-
-    if (!attemptKey) continue;
-
-    if (!map.has(testId)) map.set(testId, new Set());
-    map.get(testId).add(attemptKey);
-  }
-
-  return map;
-}
 // ====== ACTIONS ======
 async function loadTests() {
   try {
@@ -393,7 +511,6 @@ async function loadTests() {
     setStatus("");
     renderLoading("Загрузка тестов...");
 
-    // грузим тесты + результаты параллельно (чтобы посчитать попытки)
     const [testsRes, resultsRes] = await Promise.all([
       api(EP.tests, {}),
       api(EP.results, {}).catch(() => ({ ok: false, results: [] })),
@@ -404,14 +521,17 @@ async function loadTests() {
     state.user = testsRes.user;
     state.tests = testsRes.tests || [];
 
-    el("userBadge").textContent = state.user?.full_name
-      ? `@${state.user.username || ""} ${state.user.full_name}`
-      : "";
+    // (1) УБРАТЬ @username — показываем только имя
+    const nameOnly =
+      String(state.user?.full_name || "").trim() ||
+      String(state.user?.first_name || "").trim() ||
+      String(state.user?.username || "").trim() ||
+      "";
+    el("userBadge").textContent = nameOnly;
 
     const results = (resultsRes && resultsRes.ok) ? (resultsRes.results || []) : [];
     const map = calcAttemptsUsedByTest(results);
 
-    // добавляем attempts_used в каждый тест
     state.tests = state.tests.map(t => {
       const testId = String(t.test_id || "").trim();
       const used = map.get(testId)?.size || 0;
@@ -429,6 +549,7 @@ async function startTest(testId) {
     if (state.isSubmitting) return;
     setStatus("");
     renderLoading("Старт теста...");
+
     const r = await api(EP.start, { testId });
     if (!r.ok) throw new Error(r.error || "Не удалось стартовать тест");
 
@@ -451,8 +572,6 @@ async function submitCurrent(auto = false) {
 
   try {
     state.isSubmitting = true;
-
-    // Сразу показываем экран отправки (чтобы не было ощущения задержки)
     renderLoading(auto ? "Время истекло — отправляем ответы..." : "Ответы отправляются...");
 
     const s = state.session;
@@ -467,11 +586,9 @@ async function submitCurrent(auto = false) {
     if (!r.ok) throw new Error(r.error || "Не удалось отправить ответы");
 
     state.isSubmitting = false;
-    setStatus("");
     renderSubmitResult(r);
   } catch (e) {
     state.isSubmitting = false;
-    setStatus("");
     renderError(e);
   }
 }
@@ -481,6 +598,7 @@ async function loadResults() {
     if (state.isSubmitting) return;
     setStatus("");
     renderLoading("Загрузка результатов...");
+
     const r = await api(EP.results, {});
     if (!r.ok) throw new Error(r.error || "Не удалось загрузить результаты");
 
