@@ -116,16 +116,37 @@ function renderError(err) {
 
 function renderTests() {
   stopTimer();
+
   const items = (state.tests || []).map(t => {
     const timeMin = Number(t.time_limit_sec || 0) > 0 ? Math.round(Number(t.time_limit_sec) / 60) : 0;
+
+    const max = Number(t.max_attempts || 0);
+    const used = Number(t.attempts_used || 0);
+
+    const hasLimit = Number.isFinite(max) && max > 0;
+    const canStart = !hasLimit || used < max;
+
+    // Показываем "номер следующей попытки / всего"
+    // Пример: used=0,max=2 -> 1/2
+    // used=1,max=2 -> 2/2
+    // used=2,max=2 -> 2/2 (и кнопки уже нет)
+    const attemptNo = hasLimit ? Math.min(used + 1, max) : 1;
+
+    const attemptsText = hasLimit ? `${attemptNo}/${max}` : "∞";
+
     return `
       <div class="card">
         <div style="font-weight:700">${escapeHtml(t.title)}</div>
         <div class="muted" style="margin-top:6px;">
-          Время: ${timeMin ? `${timeMin} мин` : "без лимита"} · Попыток: ${Number(t.max_attempts || 0)}
+          Время: ${timeMin ? `${timeMin} мин` : "без лимита"} · Попыток: ${attemptsText}
         </div>
+
         <div style="margin-top:12px;">
-          <button class="btn" data-test="${escapeAttr(t.test_id)}">Начать</button>
+          ${
+            canStart
+              ? `<button class="btn" data-test="${escapeAttr(t.test_id)}">Начать</button>`
+              : `<div class="muted">Попытки закончились</div>`
+          }
         </div>
       </div>
     `;
@@ -339,21 +360,63 @@ function stopTimer() {
   state.timerId = null;
 }
 
+function calcAttemptsUsedByTest(results) {
+  // test_id -> Set(unique attempts)
+  const map = new Map();
+
+  for (const r of (results || [])) {
+    const testId = String(r.test_id || r.testId || "").trim();
+    if (!testId) continue;
+
+    const status = String(r.status || "").trim().toLowerCase();
+    // попыткой считаем только submit/timeout (как на бэке)
+    if (!["submitted", "timeout"].includes(status)) continue;
+
+    const attemptKey =
+      String(r.attempt_no ?? "").trim() ||
+      String(r.session_token ?? "").trim() ||
+      String(r.start_ms ?? "").trim() ||
+      String(r.submit_ms ?? "").trim();
+
+    if (!attemptKey) continue;
+
+    if (!map.has(testId)) map.set(testId, new Set());
+    map.get(testId).add(attemptKey);
+  }
+
+  return map;
+}
 // ====== ACTIONS ======
 async function loadTests() {
   try {
     if (state.isSubmitting) return;
     setStatus("");
     renderLoading("Загрузка тестов...");
-    const r = await api(EP.tests, {});
-    if (!r.ok) throw new Error(r.error || "Не удалось загрузить тесты");
 
-    state.user = r.user;
-    state.tests = r.tests || [];
+    // грузим тесты + результаты параллельно (чтобы посчитать попытки)
+    const [testsRes, resultsRes] = await Promise.all([
+      api(EP.tests, {}),
+      api(EP.results, {}).catch(() => ({ ok: false, results: [] })),
+    ]);
+
+    if (!testsRes.ok) throw new Error(testsRes.error || "Не удалось загрузить тесты");
+
+    state.user = testsRes.user;
+    state.tests = testsRes.tests || [];
 
     el("userBadge").textContent = state.user?.full_name
       ? `@${state.user.username || ""} ${state.user.full_name}`
       : "";
+
+    const results = (resultsRes && resultsRes.ok) ? (resultsRes.results || []) : [];
+    const map = calcAttemptsUsedByTest(results);
+
+    // добавляем attempts_used в каждый тест
+    state.tests = state.tests.map(t => {
+      const testId = String(t.test_id || "").trim();
+      const used = map.get(testId)?.size || 0;
+      return { ...t, attempts_used: used };
+    });
 
     renderTests();
   } catch (e) {
