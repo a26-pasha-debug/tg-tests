@@ -24,7 +24,7 @@ body{
 }
 
 .title{ font-weight:700; }
-.user{ color:var(--hint); font-size:12px; }
+.user{ color:var(--hint); font-size:12px; max-width:60%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
 .tabs{
   display:flex;
@@ -41,6 +41,7 @@ body{
   background:transparent;
   color:var(--text);
   border-radius:10px;
+  cursor:pointer;
 }
 
 .tab.active{ background:rgba(0,0,0,.06); }
@@ -80,17 +81,26 @@ body{
   color:var(--text);
 }
 
-.btn:disabled{ opacity:.5; cursor:not-allowed; }
+.btn:disabled{
+  opacity:.45;
+  cursor:not-allowed;
+}
 
 .answers label{
-  display:block;
-  padding:10px 8px;
+  display:flex;
+  gap:12px;
+  align-items:center;
+  padding:12px 10px;
   border-radius:10px;
   background:rgba(0,0,0,.03);
   margin:8px 0;
 }
 
-.answers input{ margin-right:10px; }
+.answers input{
+  width:20px;
+  height:20px;
+  flex:0 0 auto;
+}
 
 table{ width:100%; border-collapse:collapse; }
 th,td{ padding:8px; border-bottom:1px solid rgba(0,0,0,.08); text-align:left; }
@@ -102,7 +112,7 @@ th,td{ padding:8px; border-bottom:1px solid rgba(0,0,0,.08); text-align:left; }
   font-size:12px;
 }
 
-/* === question image === */
+/* Картинка вопроса */
 .q-media{
   margin-top: 12px;
   border-radius: 18px;
@@ -113,8 +123,11 @@ th,td{ padding:8px; border-bottom:1px solid rgba(0,0,0,.08); text-align:left; }
   width: 100%;
   height: auto;
   display: block;
+  max-height: 40vh;
+  object-fit: contain;
 }
 
+/* Loading */
 .loading-row{
   display:flex;
   align-items:center;
