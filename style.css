@@ -101,3 +101,158 @@ th,td{ padding:8px; border-bottom:1px solid rgba(0,0,0,.08); text-align:left; }
   color:var(--hint);
   font-size:12px;
 }
+
+.q-media{
+  margin-top: 12px;
+  border-radius: 18px;
+  overflow: hidden;
+  background: rgba(0,0,0,.05);
+}
+.q-img{
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* ===========================
+   Theme: Yellow (from screenshot #3)
+   Drop-in override: colors + safe responsive
+   =========================== */
+
+body.theme-yellow{
+  --y-accent: #FFE44D;         /* основной желтый */
+  --y-accent-ink: #141414;
+  --y-bg: #F3F3F3;
+  --y-surface: #FFFFFF;
+  --y-surface-2: #EDEDED;
+  --y-ink: #141414;
+  --y-muted: rgba(20,20,20,.55);
+  --y-border: rgba(0,0,0,.08);
+  --y-shadow: 0 10px 26px rgba(0,0,0,.10);
+
+  background: linear-gradient(
+    180deg,
+    #FFE44D 0%,
+    #FFF2A6 32%,
+    #F3F3F3 68%,
+    #F3F3F3 100%
+  ) fixed !important;
+
+  color: var(--y-ink) !important;
+  min-height: 100svh;
+}
+
+/* безопасный контейнер под любые устройства */
+body.theme-yellow #app,
+body.theme-yellow .app,
+body.theme-yellow .container,
+body.theme-yellow main{
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+body.theme-yellow #app,
+body.theme-yellow .app{
+  padding:
+    calc(env(safe-area-inset-top) + 12px)
+    14px
+    calc(env(safe-area-inset-bottom) + 16px);
+}
+
+/* текст */
+body.theme-yellow .muted,
+body.theme-yellow .sub,
+body.theme-yellow .meta,
+body.theme-yellow .subtitle{
+  color: var(--y-muted) !important;
+}
+
+/* карточки */
+body.theme-yellow .card,
+body.theme-yellow .panel,
+body.theme-yellow .box{
+  background: var(--y-surface) !important;
+  border: 1px solid var(--y-border) !important;
+  box-shadow: var(--y-shadow) !important;
+  border-radius: 22px;
+  color: var(--y-ink) !important;
+}
+
+/* табы/переключатели */
+body.theme-yellow .tabs,
+body.theme-yellow .tabbar,
+body.theme-yellow #tabs,
+body.theme-yellow .segmented{
+  background: rgba(255,255,255,.55) !important;
+  border: 1px solid rgba(255,255,255,.45) !important;
+  border-radius: 999px !important;
+  padding: 4px !important;
+  backdrop-filter: blur(8px);
+}
+
+/* активная вкладка — желтая */
+body.theme-yellow .tabs button.active,
+body.theme-yellow .tabbar button.active,
+body.theme-yellow #tabs button.active,
+body.theme-yellow .segmented button.is-active{
+  background: var(--y-accent) !important;
+  color: var(--y-accent-ink) !important;
+  border-radius: 999px !important;
+}
+
+/* кнопки */
+body.theme-yellow button,
+body.theme-yellow .btn{
+  border-radius: 999px !important;
+}
+
+/* primary — темная (как “Continue” в корпоративных стилях обычно), можно сделать желтой при желании */
+body.theme-yellow .btn.primary,
+body.theme-yellow .btn-primary,
+body.theme-yellow button.primary{
+  background: #1B1B1B !important;
+  color: #FFFFFF !important;
+  border: 0 !important;
+  box-shadow: 0 12px 26px rgba(0,0,0,.18) !important;
+}
+
+/* secondary */
+body.theme-yellow .btn.secondary,
+body.theme-yellow .btn-secondary,
+body.theme-yellow button.secondary{
+  background: var(--y-surface-2) !important;
+  color: var(--y-ink) !important;
+  border: 0 !important;
+}
+
+/* инпуты */
+body.theme-yellow input,
+body.theme-yellow textarea,
+body.theme-yellow select{
+  background: #F3F4F6 !important;
+  border: 1px solid var(--y-border) !important;
+  border-radius: 18px !important;
+  color: var(--y-ink) !important;
+}
+
+/* чекбоксы/радио */
+body.theme-yellow input[type="checkbox"],
+body.theme-yellow input[type="radio"]{
+  accent-color: var(--y-accent);
+}
+
+/* таймер (делаем аккуратной плашкой) */
+body.theme-yellow .timer,
+body.theme-yellow .timer-pill{
+  background: rgba(255,255,255,.65) !important;
+  border: 1px solid rgba(255,255,255,.65) !important;
+  color: #141414 !important;
+  border-radius: 999px !important;
+  padding: 8px 12px !important;
+  font-weight: 800;
+}
+
+/* адаптивные размеры текста (не ломают верстку) */
+body.theme-yellow h1{ font-size: clamp(22px, 4.5vw, 28px); }
+body.theme-yellow h2{ font-size: clamp(18px, 4vw, 22px); }
+body.theme-yellow .title{ font-size: clamp(18px, 4vw, 24px); }
