@@ -114,3 +114,22 @@ th,td{ padding:8px; border-bottom:1px solid rgba(0,0,0,.08); text-align:left; }
   height: auto;
   display: block;
 }
+
+.loading-row{
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+
+.spinner{
+  width:28px;
+  height:28px;
+  border-radius:50%;
+  border:3px solid rgba(0,0,0,.15);
+  border-top-color: var(--btn);
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin{
+  to { transform: rotate(360deg); }
+}
