@@ -37,6 +37,21 @@ function fmtTime(ms) {
   return `${mm}:${ss}`;
 }
 
+function escapeHtml(x) {
+  return String(x ?? "").replace(/[&<>"']/g, (m) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[m]));
+}
+
+function escapeAttr(x) {
+  // same as HTML escape is ok for attributes in our use (double quotes)
+  return escapeHtml(x);
+}
+
 // IMPORTANT:
 // Отправляем Content-Type: text/plain, чтобы чаще избегать CORS preflight (OPTIONS).
 async function api(path, data = {}) {
@@ -61,14 +76,14 @@ async function api(path, data = {}) {
 
 // ====== UI RENDER ======
 function renderLoading(title = "Загрузка...") {
-  el("main").innerHTML = `<div class="card"><div>${title}</div></div>`;
+  el("main").innerHTML = `<div class="card"><div>${escapeHtml(title)}</div></div>`;
 }
 
 function renderError(err) {
   el("main").innerHTML = `
     <div class="card">
       <div style="font-weight:700; margin-bottom:8px;">Ошибка</div>
-      <div class="muted">${String(err?.message || err || "unknown")}</div>
+      <div class="muted">${escapeHtml(String(err?.message || err || "unknown"))}</div>
       <div style="margin-top:12px;">
         <button class="btn secondary" id="btnBack">Назад</button>
       </div>
@@ -81,13 +96,13 @@ function renderTests() {
 
   const items = tests.map(t => `
     <div class="card">
-      <div style="font-weight:700">${t.title}</div>
+      <div style="font-weight:700">${escapeHtml(t.title)}</div>
       <div class="muted" style="margin-top:6px;">
-        Время: ${t.time_limit_sec ? Math.round(t.time_limit_sec/60) + " мин" : "без лимита"} ·
-        Попыток: ${t.max_attempts}
+        Время: ${t.time_limit_sec ? Math.round(Number(t.time_limit_sec)/60) + " мин" : "без лимита"} ·
+        Попыток: ${Number(t.max_attempts || 0)}
       </div>
       <div style="margin-top:12px;">
-        <button class="btn" data-test="${t.test_id}">Начать</button>
+        <button class="btn" data-test="${escapeAttr(t.test_id)}">Начать</button>
       </div>
     </div>
   `).join("");
@@ -101,45 +116,84 @@ function renderTests() {
 
 function renderQuestion() {
   const s = state.session;
-  const q = s.questions[state.qIndex];
-const titleEl = document.getElementById("questionText") || document.querySelector(".question-title");
-  if (titleEl && titleEl.parentNode) titleEl.parentNode.insertBefore(box, titleEl.nextSibling);
-}
-// img in question (optional)
-const imgUrl = (q.image_url || "").trim();
-const imgBox = document.getElementById("questionImageBox"); // если есть контейнер
-if (imgBox) imgBox.remove();
+  if (!s || !Array.isArray(s.questions) || !s.questions.length) {
+    renderError("Сессия пуста или не содержит вопросов");
+    return;
+  }
 
-// Если изображения нет — ничего не делаем
-if (imgUrl) {
-  const box = document.createElement("div");
-  box.id = "questionImageBox";
-  box.className = "q-media";
-  box.innerHTML = `<img class="q-img" src="${imgUrl}" alt="Изображение к вопросу" loading="lazy" />`;
+  const q = s.questions[state.qIndex];
+  if (!q) {
+    renderError("Вопрос не найден");
+    return;
+  }
+
   const selected = new Set(state.answers[q.question_id] || []);
 
-  const answersHtml = q.answers.map(a => {
-    const checked = selected.has(a.answer_id) ? "checked" : "";
+  // dedupe answers by answer_id (на случай дублей в таблице)
+  const seenAnswerIds = new Set();
+  const answersList = (q.answers || []).filter(a => {
+    const aid = String(a?.answer_id || "").trim();
+    if (!aid) return false;
+    if (seenAnswerIds.has(aid)) return false;
+    seenAnswerIds.add(aid);
+    return true;
+  });
+
+  const answersHtml = answersList.map(a => {
+    const aid = String(a.answer_id || "").trim();
+    const atext = String(a.answer_text || "").trim();
+    if (!aid || !atext) return "";
+    const checked = selected.has(aid) ? "checked" : "";
     return `
       <label>
-        <input type="checkbox" data-q="${q.question_id}" value="${a.answer_id}" ${checked} />
-        ${a.answer_text}
+        <input type="checkbox" data-q="${escapeAttr(q.question_id)}" value="${escapeAttr(aid)}" ${checked} />
+        ${escapeHtml(atext)}
       </label>`;
   }).join("");
 
   const progress = `${state.qIndex + 1} / ${s.questions.length}`;
 
+  const qText = String(q.question_text || "").trim();
+  const imgUrl = String(q.image_url || "").trim();
+
+  const questionTextHtml = qText
+    ? `<div style="font-weight:700; margin-top:10px;">${escapeHtml(qText)}</div>`
+    : "";
+
+  const imgHtml = imgUrl
+    ? `
+      <div class="q-media">
+        <img class="q-img" src="${escapeAttr(imgUrl)}" alt="Изображение к вопросу" loading="lazy"
+             onerror="this.closest('.q-media')?.remove();" />
+      </div>
+    `
+    : "";
+
+  const points = Number(q.points || 0);
+
+  const attemptNo = Number(s.attempt_no || 0) || 1;
+  const maxAttempts = Number(s?.test?.max_attempts || 0);
+
+  // ВАЖНО: "Осталось" считаем ПОСЛЕ текущей попытки
+  const remainingAfter = Number.isFinite(maxAttempts) && maxAttempts > 0
+    ? Math.max(0, maxAttempts - attemptNo)
+    : Number(s.remaining_attempts || 0);
+
   el("main").innerHTML = `
     <div class="card">
       <div class="row">
-        <div class="muted">Вопрос ${progress}</div>
+        <div class="muted">Вопрос ${escapeHtml(progress)}</div>
         <div class="timer" id="timer">${s.expires_ms ? fmtTime(state.expiresLocal - Date.now()) : "∞"}</div>
       </div>
 
-      <div style="font-weight:700; margin-top:10px;">${q.question_text}</div>
-      <div class="muted" style="margin-top:6px;">Баллы за вопрос: ${q.points}</div>
+      ${questionTextHtml}
+      ${imgHtml}
 
-      <div class="answers" style="margin-top:10px;">${answersHtml}</div>
+      <div class="muted" style="margin-top:6px;">Баллы за вопрос: ${points}</div>
+
+      <div class="answers" style="margin-top:10px;">
+        ${answersHtml || `<div class="muted">Нет вариантов ответа</div>`}
+      </div>
 
       <div class="row" style="margin-top:12px;">
         <button class="btn secondary" id="btnPrev" ${state.qIndex === 0 ? "disabled" : ""}>Назад</button>
@@ -147,7 +201,7 @@ if (imgUrl) {
       </div>
 
       <div class="row" style="margin-top:12px;">
-        <div class="muted">Попытка: ${s.attempt_no} · Осталось: ${s.remaining_attempts}</div>
+        <div class="muted">Попытка: ${attemptNo} · Осталось: ${remainingAfter}</div>
         <button class="btn" id="btnSubmit">${state.qIndex === s.questions.length - 1 ? "Отправить" : "Отправить сейчас"}</button>
       </div>
     </div>
@@ -157,9 +211,14 @@ if (imgUrl) {
   document.querySelectorAll("input[type=checkbox][data-q]").forEach(inp => {
     inp.onchange = () => {
       const qid = inp.getAttribute("data-q");
-      const checkedIds = Array.from(document.querySelectorAll(`input[data-q="${qid}"]`))
+      const qidSel = (window.CSS && typeof CSS.escape === "function")
+        ? CSS.escape(qid)
+        : String(qid).replace(/"/g, '\\"');
+
+      const checkedIds = Array.from(document.querySelectorAll(`input[data-q="${qidSel}"]`))
         .filter(x => x.checked)
         .map(x => x.value);
+
       state.answers[qid] = checkedIds;
     };
   });
@@ -174,13 +233,13 @@ function renderSubmitResult(r) {
     <div class="card">
       <div style="font-weight:700; font-size:16px;">Результат</div>
       <div class="muted" style="margin-top:6px;">
-        Статус: <b>${r.status}</b>${r.expired ? " (время истекло)" : ""}
+        Статус: <b>${escapeHtml(r.status)}</b>${r.expired ? " (время истекло)" : ""}
       </div>
       <div style="margin-top:10px;">
-        Баллы: <b>${r.score}</b> / ${r.max_score} (${r.percent}%)
+        Баллы: <b>${Number(r.score)}</b> / ${Number(r.max_score)} (${Number(r.percent)}%)
       </div>
       <div class="muted" style="margin-top:6px;">
-        Длительность: ${r.duration_sec} сек · Попытка: ${r.attempt_no}
+        Длительность: ${Number(r.duration_sec)} сек · Попытка: ${Number(r.attempt_no)}
       </div>
 
       <div class="row" style="margin-top:12px;">
@@ -203,12 +262,12 @@ function renderResultsList(results) {
     const dt = r.submit_ms ? new Date(r.submit_ms).toLocaleString() : "";
     return `
       <tr>
-        <td>${r.test_title || r.test_id}</td>
-        <td>${r.attempt_no}</td>
-        <td>${r.status}</td>
-        <td>${r.score}/${r.max_score} (${r.percent}%)</td>
-        <td>${r.duration_sec}s</td>
-        <td>${dt}</td>
+        <td>${escapeHtml(r.test_title || r.test_id)}</td>
+        <td>${Number(r.attempt_no)}</td>
+        <td>${escapeHtml(r.status)}</td>
+        <td>${Number(r.score)}/${Number(r.max_score)} (${Number(r.percent)}%)</td>
+        <td>${Number(r.duration_sec)}s</td>
+        <td>${escapeHtml(dt)}</td>
       </tr>`;
   }).join("");
 
