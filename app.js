@@ -24,15 +24,8 @@ const state = {
   isSubmitting: false,
 };
 
-function tg() {
-  return window.Telegram?.WebApp || null;
-}
+function tg() { return window.Telegram?.WebApp || null; }
 function el(id) { return document.getElementById(id); }
-
-function setStatus(msg) {
-  const s = el("status");
-  if (s) s.textContent = msg || "";
-}
 
 function fmtTime(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -51,11 +44,9 @@ function escapeAttr(x) { return escapeHtml(x); }
 function toBool(v) {
   if (typeof v === "boolean") return v;
   if (typeof v === "number") return v !== 0;
-  if (typeof v === "string") {
-    const s = v.trim().toLowerCase();
-    if (["true","1","yes","y","да"].includes(s)) return true;
-    if (["false","0","no","n","нет",""].includes(s)) return false;
-  }
+  const s = String(v ?? "").trim().toLowerCase();
+  if (["true","1","yes","y","да"].includes(s)) return true;
+  if (["false","0","no","n","нет",""].includes(s)) return false;
   return false;
 }
 
@@ -67,12 +58,13 @@ function cssEsc(s) {
 }
 
 /**
- * Нормализуем ссылки, которые часто НЕ грузятся в мобильном Telegram:
+ * Нормализация image_url для мобильного Telegram:
  * - //domain -> https://domain
  * - http:// -> https://
  * - Google Drive file link -> uc?export=view&id=
  * - Dropbox dl=0 -> raw=1
  * - GitHub blob -> raw.githubusercontent
+ * - encodeURI (пробелы/кириллица)
  */
 function normalizeImageUrl(urlRaw) {
   let url = String(urlRaw || "").trim();
@@ -98,9 +90,7 @@ function normalizeImageUrl(urlRaw) {
     url = `https://raw.githubusercontent.com/${mGh[1]}/${mGh[2]}/${mGh[3]}`;
   }
 
-  // аккуратно кодируем пробелы и кириллицу
   try { url = encodeURI(url); } catch {}
-
   return url;
 }
 
@@ -130,10 +120,15 @@ async function api(path, data = {}) {
   return json;
 }
 
-// ====== UI ======
+// ====== UI helpers ======
 function setActiveTab(tab) {
   el("tabTests")?.classList.toggle("active", tab === "tests");
   el("tabResults")?.classList.toggle("active", tab === "results");
+}
+
+function stopTimer() {
+  clearInterval(state.timerId);
+  state.timerId = null;
 }
 
 function renderLoading(title = "Загрузка...") {
@@ -165,7 +160,7 @@ function renderError(err) {
   el("btnBack").onclick = () => loadTests();
 }
 
-// ====== Attempts calculation for tests screen ======
+// ====== Attempts map for tests screen ======
 function calcAttemptsUsedByTest(results) {
   const map = new Map(); // test_id -> Set(unique attempt keys)
 
@@ -191,6 +186,7 @@ function calcAttemptsUsedByTest(results) {
   return map;
 }
 
+// ====== Tests screen ======
 function renderTests() {
   stopTimer();
 
@@ -198,14 +194,13 @@ function renderTests() {
     const timeMin = Number(t.time_limit_sec || 0) > 0 ? Math.round(Number(t.time_limit_sec) / 60) : 0;
 
     const max = Number(t.max_attempts || 0);
-    const used = Number(t.attempts_used || 0);
+    const used = Math.max(0, Number(t.attempts_used || 0));
     const hasLimit = Number.isFinite(max) && max > 0;
 
-    const canStart = !hasLimit || used < max;
+    const usedClamped = hasLimit ? Math.min(used, max) : used;
+    const attemptsText = hasLimit ? `${usedClamped}/${max}` : "∞";
 
-    // "Попыток 1/2" (следующая попытка / всего)
-    const attemptNo = hasLimit ? Math.min(used + 1, max) : 1;
-    const attemptsText = hasLimit ? `${attemptNo}/${max}` : "∞";
+    const canStart = !hasLimit || used < max;
 
     return `
       <div class="card">
@@ -231,6 +226,31 @@ function renderTests() {
   });
 
   setActiveTab("tests");
+}
+
+// ====== Quiz ======
+function startTimer() {
+  clearInterval(state.timerId);
+  state.autoSubmitted = false;
+
+  if (!state.session?.expires_ms) {
+    state.timerId = null;
+    return;
+  }
+
+  state.timerId = setInterval(() => {
+    const tEl = document.getElementById("timer");
+    if (!tEl) return;
+
+    const remain = state.expiresLocal - Date.now();
+    tEl.textContent = fmtTime(remain);
+
+    if (remain <= 0 && !state.autoSubmitted && !state.isSubmitting) {
+      state.autoSubmitted = true;
+      clearInterval(state.timerId);
+      submitCurrent(true).catch(() => {});
+    }
+  }, 250);
 }
 
 function syncAnswersFromDom(qid, isMulti) {
@@ -265,11 +285,9 @@ function renderQuestion() {
 
   const isLast = state.qIndex === s.questions.length - 1;
 
-  // ВАЖНО:
-  // чтобы радио/чекбоксы работали правильно — сервер должен прислать q.multi (true/false).
-  // Если q.multi не пришло — по умолчанию оставляем чекбоксы (чтобы не ломать мультивыбор).
-  const hasMultiFlag = (q.multi !== undefined && q.multi !== null);
-  const isMulti = hasMultiFlag ? toBool(q.multi) : true;
+  // ВАЖНО: тут больше нет fallback=true.
+  // Если сервер не прислал q.multi — будет single-choice (radio).
+  const isMulti = toBool(q.multi);
 
   const selected = new Set(state.answers[q.question_id] || []);
 
@@ -308,7 +326,7 @@ function renderQuestion() {
   const imgUrl = normalizeImageUrl(q.image_url || "");
   const imgHtml = imgUrl
     ? `
-      <div class="q-media" id="qMedia">
+      <div class="q-media">
         <img
           class="q-img"
           src="${escapeAttr(imgUrl)}"
@@ -331,10 +349,10 @@ function renderQuestion() {
 
   const hasSelection = selected.size > 0;
 
-  // Кнопка "Далее" — нельзя, если не выбран ответ
-  const nextDisabled = (!hasSelection) || isLast;
+  // "Далее" нельзя, если не выбран ответ
+  const nextDisabled = (!hasSelection);
 
-  // Кнопка "Отправить" — только на последнем вопросе и только если выбран ответ
+  // "Отправить" только на последнем и только если выбран ответ
   const submitDisabled = (!hasSelection);
 
   el("main").innerHTML = `
@@ -353,14 +371,25 @@ function renderQuestion() {
         ${answersHtml || `<div class="muted">Нет вариантов ответа</div>`}
       </div>
 
+      <!-- Навигация -->
       <div class="row" style="margin-top:12px;">
         <button class="btn secondary" id="btnPrev" ${state.qIndex === 0 ? "disabled" : ""}>Назад</button>
-        <button class="btn secondary" id="btnNext" ${nextDisabled ? "disabled" : ""}>Далее</button>
+
+        ${
+          !isLast
+            ? `<button class="btn secondary" id="btnNext" ${nextDisabled ? "disabled" : ""}>Далее</button>`
+            : ""
+        }
       </div>
 
+      <!-- Низ -->
       <div class="row" style="margin-top:12px;">
         <div class="muted">Попытка: ${attemptNo}/${maxAttempts || "∞"} · Осталось: ${remainingAfter}</div>
-        ${isLast ? `<button class="btn" id="btnSubmit" ${submitDisabled ? "disabled" : ""}>Отправить</button>` : ""}
+        ${
+          isLast
+            ? `<button class="btn" id="btnSubmit" ${submitDisabled ? "disabled" : ""}>Отправить</button>`
+            : ""
+        }
       </div>
     </div>
   `;
@@ -370,13 +399,13 @@ function renderQuestion() {
     const ok = nowSelected.size > 0;
 
     const nextBtn = el("btnNext");
-    if (nextBtn) nextBtn.disabled = (!ok) || isLast;
+    if (nextBtn) nextBtn.disabled = !ok;
 
     const submitBtn = el("btnSubmit");
     if (submitBtn) submitBtn.disabled = !ok;
   }
 
-  // handlers
+  // handlers on answers
   document.querySelectorAll(`input[data-q="${cssEsc(q.question_id)}"]`).forEach(inp => {
     inp.onchange = () => {
       syncAnswersFromDom(q.question_id, isMulti);
@@ -386,13 +415,14 @@ function renderQuestion() {
 
   el("btnPrev").onclick = () => { state.qIndex--; renderQuestion(); };
 
-  el("btnNext").onclick = () => {
-    // защита на всякий случай
-    const arr = state.answers[q.question_id] || [];
-    if (!arr.length) return;
-    state.qIndex++;
-    renderQuestion();
-  };
+  const nextBtn = el("btnNext");
+  if (nextBtn) {
+    nextBtn.onclick = () => {
+      if (!(state.answers[q.question_id] || []).length) return;
+      state.qIndex++;
+      renderQuestion();
+    };
+  }
 
   const submitBtn = el("btnSubmit");
   if (submitBtn) {
@@ -402,6 +432,7 @@ function renderQuestion() {
   startTimer();
 }
 
+// ====== Submit & Results ======
 function renderSubmitResult(r) {
   stopTimer();
   el("main").innerHTML = `
@@ -474,41 +505,10 @@ function renderResultsList(results) {
   setActiveTab("results");
 }
 
-// ====== TIMER ======
-function startTimer() {
-  clearInterval(state.timerId);
-  state.autoSubmitted = false;
-
-  if (!state.session?.expires_ms) {
-    state.timerId = null;
-    return;
-  }
-
-  state.timerId = setInterval(() => {
-    const tEl = document.getElementById("timer");
-    if (!tEl) return;
-
-    const remain = state.expiresLocal - Date.now();
-    tEl.textContent = fmtTime(remain);
-
-    if (remain <= 0 && !state.autoSubmitted && !state.isSubmitting) {
-      state.autoSubmitted = true;
-      clearInterval(state.timerId);
-      submitCurrent(true).catch(() => {});
-    }
-  }, 250);
-}
-
-function stopTimer() {
-  clearInterval(state.timerId);
-  state.timerId = null;
-}
-
-// ====== ACTIONS ======
+// ====== Actions ======
 async function loadTests() {
   try {
     if (state.isSubmitting) return;
-    setStatus("");
     renderLoading("Загрузка тестов...");
 
     const [testsRes, resultsRes] = await Promise.all([
@@ -521,7 +521,7 @@ async function loadTests() {
     state.user = testsRes.user;
     state.tests = testsRes.tests || [];
 
-    // (1) УБРАТЬ @username — показываем только имя
+    // (1) сверху только имя
     const nameOnly =
       String(state.user?.full_name || "").trim() ||
       String(state.user?.first_name || "").trim() ||
@@ -532,6 +532,7 @@ async function loadTests() {
     const results = (resultsRes && resultsRes.ok) ? (resultsRes.results || []) : [];
     const map = calcAttemptsUsedByTest(results);
 
+    // attempts_used по тесту
     state.tests = state.tests.map(t => {
       const testId = String(t.test_id || "").trim();
       const used = map.get(testId)?.size || 0;
@@ -547,7 +548,6 @@ async function loadTests() {
 async function startTest(testId) {
   try {
     if (state.isSubmitting) return;
-    setStatus("");
     renderLoading("Старт теста...");
 
     const r = await api(EP.start, { testId });
@@ -596,7 +596,6 @@ async function submitCurrent(auto = false) {
 async function loadResults() {
   try {
     if (state.isSubmitting) return;
-    setStatus("");
     renderLoading("Загрузка результатов...");
 
     const r = await api(EP.results, {});
