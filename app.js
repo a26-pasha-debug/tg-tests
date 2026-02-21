@@ -84,8 +84,7 @@ function renderTests() {
       <div style="font-weight:700">${t.title}</div>
       <div class="muted" style="margin-top:6px;">
         Время: ${t.time_limit_sec ? Math.round(t.time_limit_sec/60) + " мин" : "без лимита"} ·
-        Попыток: ${t.max_attempts} ·
-        Шафл: ${t.shuffle ? "да" : "нет"}
+        Попыток: ${t.max_attempts}
       </div>
       <div style="margin-top:12px;">
         <button class="btn" data-test="${t.test_id}">Начать</button>
