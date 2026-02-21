@@ -1,5 +1,5 @@
 // ====== CONFIG ======
-const API_BASE = "https://mlmotiv.app.n8n.cloud/webhook"; // пример: https://xxxx.app.n8n.cloud/webhook
+const API_BASE = "https://mlmotiv.app.n8n.cloud/webhook";
 const EP = {
   tests: "tg-tests",
   start: "tg-start",
@@ -11,23 +11,27 @@ const EP = {
 const state = {
   user: null,
   tests: [],
-  session: null,      // { test, start_ms, expires_ms, session_token, questions, attempt_no, remaining_attempts }
+  session: null,
   qIndex: 0,
-  answers: {},        // { [question_id]: [answer_id, ...] }
+  answers: {},
+
   timerId: null,
   autoSubmitted: false,
-  clockSkew: 0,       // clientNow - serverStartMs
-  expiresLocal: null, // expires_ms + clockSkew
+
+  clockSkew: 0,      // clientNow - serverStartMs
+  expiresLocal: null,// expires_ms + clockSkew
+
+  isSubmitting: false,
 };
 
 function tg() {
   return window.Telegram?.WebApp || null;
 }
-
 function el(id) { return document.getElementById(id); }
 
 function setStatus(msg) {
-  el("status").textContent = msg || "";
+  const s = el("status");
+  if (s) s.textContent = msg || "";
 }
 
 function fmtTime(ms) {
@@ -46,14 +50,9 @@ function escapeHtml(x) {
     "'": "&#39;",
   }[m]));
 }
+function escapeAttr(x) { return escapeHtml(x); }
 
-function escapeAttr(x) {
-  // same as HTML escape is ok for attributes in our use (double quotes)
-  return escapeHtml(x);
-}
-
-// IMPORTANT:
-// Отправляем Content-Type: text/plain, чтобы чаще избегать CORS preflight (OPTIONS).
+// IMPORTANT: text/plain — меньше шансов на preflight OPTIONS
 async function api(path, data = {}) {
   const webapp = tg();
   if (!webapp) throw new Error("Откройте Mini App внутри Telegram.");
@@ -67,19 +66,42 @@ async function api(path, data = {}) {
   });
 
   const text = await res.text();
+
+  // двойной parse на случай если бек вернул JSON-строку
   let json;
-  try { json = JSON.parse(text); }
-  catch { throw new Error("Сервер вернул не-JSON: " + text); }
+  try {
+    json = JSON.parse(text);
+    if (typeof json === "string") json = JSON.parse(json);
+  } catch {
+    throw new Error("Сервер вернул не-JSON: " + text);
+  }
 
   return json;
 }
 
-// ====== UI RENDER ======
+// ====== UI ======
+function setActiveTab(tab) {
+  el("tabTests")?.classList.toggle("active", tab === "tests");
+  el("tabResults")?.classList.toggle("active", tab === "results");
+}
+
 function renderLoading(title = "Загрузка...") {
-  el("main").innerHTML = `<div class="card"><div>${escapeHtml(title)}</div></div>`;
+  stopTimer();
+  el("main").innerHTML = `
+    <div class="card">
+      <div class="loading-row">
+        <div class="spinner" aria-hidden="true"></div>
+        <div>
+          <div style="font-weight:700">${escapeHtml(title)}</div>
+          <div class="muted" style="margin-top:6px;">Пожалуйста, подождите…</div>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function renderError(err) {
+  stopTimer();
   el("main").innerHTML = `
     <div class="card">
       <div style="font-weight:700; margin-bottom:8px;">Ошибка</div>
@@ -87,31 +109,35 @@ function renderError(err) {
       <div style="margin-top:12px;">
         <button class="btn secondary" id="btnBack">Назад</button>
       </div>
-    </div>`;
-  document.getElementById("btnBack").onclick = () => loadTests();
+    </div>
+  `;
+  el("btnBack").onclick = () => loadTests();
 }
 
 function renderTests() {
-  const tests = state.tests;
-
-  const items = tests.map(t => `
-    <div class="card">
-      <div style="font-weight:700">${escapeHtml(t.title)}</div>
-      <div class="muted" style="margin-top:6px;">
-        Время: ${t.time_limit_sec ? Math.round(Number(t.time_limit_sec)/60) + " мин" : "без лимита"} ·
-        Попыток: ${Number(t.max_attempts || 0)}
+  stopTimer();
+  const items = (state.tests || []).map(t => {
+    const timeMin = Number(t.time_limit_sec || 0) > 0 ? Math.round(Number(t.time_limit_sec) / 60) : 0;
+    return `
+      <div class="card">
+        <div style="font-weight:700">${escapeHtml(t.title)}</div>
+        <div class="muted" style="margin-top:6px;">
+          Время: ${timeMin ? `${timeMin} мин` : "без лимита"} · Попыток: ${Number(t.max_attempts || 0)}
+        </div>
+        <div style="margin-top:12px;">
+          <button class="btn" data-test="${escapeAttr(t.test_id)}">Начать</button>
+        </div>
       </div>
-      <div style="margin-top:12px;">
-        <button class="btn" data-test="${escapeAttr(t.test_id)}">Начать</button>
-      </div>
-    </div>
-  `).join("");
+    `;
+  }).join("");
 
   el("main").innerHTML = items || `<div class="card">Нет активных тестов</div>`;
 
   document.querySelectorAll("button[data-test]").forEach(btn => {
     btn.onclick = () => startTest(btn.getAttribute("data-test"));
   });
+
+  setActiveTab("tests");
 }
 
 function renderQuestion() {
@@ -129,55 +155,39 @@ function renderQuestion() {
 
   const selected = new Set(state.answers[q.question_id] || []);
 
-  // dedupe answers by answer_id (на случай дублей в таблице)
-  const seenAnswerIds = new Set();
+  // дедуп ответов по answer_id (на случай дублей)
+  const seen = new Set();
   const answersList = (q.answers || []).filter(a => {
-    const aid = String(a?.answer_id || "").trim();
-    if (!aid) return false;
-    if (seenAnswerIds.has(aid)) return false;
-    seenAnswerIds.add(aid);
+    const id = String(a?.answer_id || "").trim();
+    if (!id) return false;
+    if (seen.has(id)) return false;
+    seen.add(id);
     return true;
   });
 
   const answersHtml = answersList.map(a => {
     const aid = String(a.answer_id || "").trim();
     const atext = String(a.answer_text || "").trim();
-    if (!aid || !atext) return "";
     const checked = selected.has(aid) ? "checked" : "";
     return `
       <label>
         <input type="checkbox" data-q="${escapeAttr(q.question_id)}" value="${escapeAttr(aid)}" ${checked} />
         ${escapeHtml(atext)}
-      </label>`;
+      </label>
+    `;
   }).join("");
-
-  const progress = `${state.qIndex + 1} / ${s.questions.length}`;
 
   const qText = String(q.question_text || "").trim();
   const imgUrl = String(q.image_url || "").trim();
-
-  const questionTextHtml = qText
-    ? `<div style="font-weight:700; margin-top:10px;">${escapeHtml(qText)}</div>`
-    : "";
-
   const imgHtml = imgUrl
-    ? `
-      <div class="q-media">
-        <img class="q-img" src="${escapeAttr(imgUrl)}" alt="Изображение к вопросу" loading="lazy"
-             onerror="this.closest('.q-media')?.remove();" />
-      </div>
-    `
+    ? `<div class="q-media"><img class="q-img" src="${escapeAttr(imgUrl)}" alt="" loading="lazy" onerror="this.closest('.q-media')?.remove();" /></div>`
     : "";
 
-  const points = Number(q.points || 0);
+  const progress = `${state.qIndex + 1} / ${s.questions.length}`;
 
-  const attemptNo = Number(s.attempt_no || 0) || 1;
+  const attemptNo = Number(s.attempt_no || 1);
   const maxAttempts = Number(s?.test?.max_attempts || 0);
-
-  // ВАЖНО: "Осталось" считаем ПОСЛЕ текущей попытки
-  const remainingAfter = Number.isFinite(maxAttempts) && maxAttempts > 0
-    ? Math.max(0, maxAttempts - attemptNo)
-    : Number(s.remaining_attempts || 0);
+  const remainingAfter = maxAttempts > 0 ? Math.max(0, maxAttempts - attemptNo) : Number(s.remaining_attempts || 0);
 
   el("main").innerHTML = `
     <div class="card">
@@ -186,10 +196,10 @@ function renderQuestion() {
         <div class="timer" id="timer">${s.expires_ms ? fmtTime(state.expiresLocal - Date.now()) : "∞"}</div>
       </div>
 
-      ${questionTextHtml}
+      ${qText ? `<div style="font-weight:700; margin-top:10px;">${escapeHtml(qText)}</div>` : ""}
       ${imgHtml}
 
-      <div class="muted" style="margin-top:6px;">Баллы за вопрос: ${points}</div>
+      <div class="muted" style="margin-top:6px;">Баллы за вопрос: ${Number(q.points || 0)}</div>
 
       <div class="answers" style="margin-top:10px;">
         ${answersHtml || `<div class="muted">Нет вариантов ответа</div>`}
@@ -207,15 +217,12 @@ function renderQuestion() {
     </div>
   `;
 
-  // checkbox handlers
-  document.querySelectorAll("input[type=checkbox][data-q]").forEach(inp => {
+  document.querySelectorAll('input[type="checkbox"][data-q]').forEach(inp => {
     inp.onchange = () => {
       const qid = inp.getAttribute("data-q");
-      const qidSel = (window.CSS && typeof CSS.escape === "function")
-        ? CSS.escape(qid)
-        : String(qid).replace(/"/g, '\\"');
+      const safe = (window.CSS && CSS.escape) ? CSS.escape(qid) : qid.replace(/"/g, '\\"');
 
-      const checkedIds = Array.from(document.querySelectorAll(`input[data-q="${qidSel}"]`))
+      const checkedIds = Array.from(document.querySelectorAll(`input[data-q="${safe}"]`))
         .filter(x => x.checked)
         .map(x => x.value);
 
@@ -226,9 +233,12 @@ function renderQuestion() {
   el("btnPrev").onclick = () => { state.qIndex--; renderQuestion(); };
   el("btnNext").onclick = () => { state.qIndex++; renderQuestion(); };
   el("btnSubmit").onclick = () => submitCurrent(false);
+
+  startTimer();
 }
 
 function renderSubmitResult(r) {
+  stopTimer();
   el("main").innerHTML = `
     <div class="card">
       <div style="font-weight:700; font-size:16px;">Результат</div>
@@ -243,7 +253,7 @@ function renderSubmitResult(r) {
       </div>
 
       <div class="row" style="margin-top:12px;">
-        <button class="btn secondary" id="btnToTests">К списку тестов</button>
+        <button class="btn secondary" id="btnToTests">К тестам</button>
         <button class="btn" id="btnToResults">Мои результаты</button>
       </div>
     </div>
@@ -253,41 +263,50 @@ function renderSubmitResult(r) {
 }
 
 function renderResultsList(results) {
-  if (!results.length) {
+  stopTimer();
+
+  if (!results || !results.length) {
     el("main").innerHTML = `<div class="card">Результатов пока нет.</div>`;
+    setActiveTab("results");
     return;
   }
 
   const rows = results.map(r => {
-    const dt = r.submit_ms ? new Date(r.submit_ms).toLocaleString() : "";
+    const dt = r.submit_ms ? new Date(Number(r.submit_ms)).toLocaleString() : "";
     return `
       <tr>
         <td>${escapeHtml(r.test_title || r.test_id)}</td>
-        <td>${Number(r.attempt_no)}</td>
-        <td>${escapeHtml(r.status)}</td>
-        <td>${Number(r.score)}/${Number(r.max_score)} (${Number(r.percent)}%)</td>
-        <td>${Number(r.duration_sec)}s</td>
+        <td>${Number(r.attempt_no || 0)}</td>
+        <td>${escapeHtml(r.status || "")}</td>
+        <td>${Number(r.score || 0)}/${Number(r.max_score || 0)} (${Number(r.percent || 0)}%)</td>
+        <td>${Number(r.duration_sec || 0)}s</td>
         <td>${escapeHtml(dt)}</td>
-      </tr>`;
+      </tr>
+    `;
   }).join("");
 
   el("main").innerHTML = `
     <div class="card">
       <div style="font-weight:700; margin-bottom:8px;">Мои результаты</div>
-      <table>
-        <thead>
-          <tr>
-            <th>Тест</th>
-            <th>#</th>
-            <th>Статус</th>
-            <th>Баллы</th>
-            <th>Время</th>
-            <th>Дата</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
+      <div style="overflow:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Тест</th>
+              <th>#</th>
+              <th>Статус</th>
+              <th>Баллы</th>
+              <th>Время</th>
+              <th>Дата</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  setActiveTab("results");
 }
 
 // ====== TIMER ======
@@ -307,7 +326,7 @@ function startTimer() {
     const remain = state.expiresLocal - Date.now();
     tEl.textContent = fmtTime(remain);
 
-    if (remain <= 0 && !state.autoSubmitted) {
+    if (remain <= 0 && !state.autoSubmitted && !state.isSubmitting) {
       state.autoSubmitted = true;
       clearInterval(state.timerId);
       submitCurrent(true).catch(() => {});
@@ -315,9 +334,15 @@ function startTimer() {
   }, 250);
 }
 
+function stopTimer() {
+  clearInterval(state.timerId);
+  state.timerId = null;
+}
+
 // ====== ACTIONS ======
 async function loadTests() {
   try {
+    if (state.isSubmitting) return;
     setStatus("");
     renderLoading("Загрузка тестов...");
     const r = await api(EP.tests, {});
@@ -326,10 +351,11 @@ async function loadTests() {
     state.user = r.user;
     state.tests = r.tests || [];
 
-    el("userBadge").textContent = state.user?.full_name ? `@${state.user.username || ""} ${state.user.full_name}` : "";
+    el("userBadge").textContent = state.user?.full_name
+      ? `@${state.user.username || ""} ${state.user.full_name}`
+      : "";
 
     renderTests();
-    setActiveTab("tests");
   } catch (e) {
     renderError(e);
   }
@@ -337,6 +363,7 @@ async function loadTests() {
 
 async function startTest(testId) {
   try {
+    if (state.isSubmitting) return;
     setStatus("");
     renderLoading("Старт теста...");
     const r = await api(EP.start, { testId });
@@ -346,22 +373,25 @@ async function startTest(testId) {
     state.qIndex = 0;
     state.answers = {};
 
-    // расчет с поправкой на разницу часов (client vs server)
     state.clockSkew = Date.now() - r.start_ms;
     state.expiresLocal = r.expires_ms ? (r.expires_ms + state.clockSkew) : null;
 
     renderQuestion();
-    startTimer();
   } catch (e) {
     renderError(e);
   }
 }
 
 async function submitCurrent(auto = false) {
-  try {
-    if (!state.session) return;
+  if (state.isSubmitting) return;
+  if (!state.session) return;
 
-    setStatus(auto ? "Время истекло — отправляем ответы..." : "Отправляем ответы...");
+  try {
+    state.isSubmitting = true;
+
+    // Сразу показываем экран отправки (чтобы не было ощущения задержки)
+    renderLoading(auto ? "Время истекло — отправляем ответы..." : "Ответы отправляются...");
+
     const s = state.session;
 
     const r = await api(EP.submit, {
@@ -373,10 +403,11 @@ async function submitCurrent(auto = false) {
 
     if (!r.ok) throw new Error(r.error || "Не удалось отправить ответы");
 
-    clearInterval(state.timerId);
+    state.isSubmitting = false;
     setStatus("");
     renderSubmitResult(r);
   } catch (e) {
+    state.isSubmitting = false;
     setStatus("");
     renderError(e);
   }
@@ -384,21 +415,16 @@ async function submitCurrent(auto = false) {
 
 async function loadResults() {
   try {
+    if (state.isSubmitting) return;
     setStatus("");
     renderLoading("Загрузка результатов...");
     const r = await api(EP.results, {});
     if (!r.ok) throw new Error(r.error || "Не удалось загрузить результаты");
 
     renderResultsList(r.results || []);
-    setActiveTab("results");
   } catch (e) {
     renderError(e);
   }
-}
-
-function setActiveTab(tab) {
-  el("tabTests").classList.toggle("active", tab === "tests");
-  el("tabResults").classList.toggle("active", tab === "results");
 }
 
 // ====== INIT ======
