@@ -127,10 +127,10 @@ function renderTests() {
     const canStart = !hasLimit || used < max;
 
     // Показываем "номер следующей попытки / всего"
-    // Пример: used=0,max=2 -> 1/2
-    // used=1,max=2 -> 2/2
+    // Пример: used=0,max=2 -> 0/2
+    // used=1,max=2 -> 1/2
     // used=2,max=2 -> 2/2 (и кнопки уже нет)
-    const attemptNo = hasLimit ? Math.min(used + 1, max) : 1;
+    const attemptNo = hasLimit ? Math.min(used, max) : 1;
 
     const attemptsText = hasLimit ? `${attemptNo}/${max}` : "∞";
 
