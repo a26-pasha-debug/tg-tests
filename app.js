@@ -102,7 +102,20 @@ function renderTests() {
 function renderQuestion() {
   const s = state.session;
   const q = s.questions[state.qIndex];
+const titleEl = document.getElementById("questionText") || document.querySelector(".question-title");
+  if (titleEl && titleEl.parentNode) titleEl.parentNode.insertBefore(box, titleEl.nextSibling);
+}
+// img in question (optional)
+const imgUrl = (q.image_url || "").trim();
+const imgBox = document.getElementById("questionImageBox"); // если есть контейнер
+if (imgBox) imgBox.remove();
 
+// Если изображения нет — ничего не делаем
+if (imgUrl) {
+  const box = document.createElement("div");
+  box.id = "questionImageBox";
+  box.className = "q-media";
+  box.innerHTML = `<img class="q-img" src="${imgUrl}" alt="Изображение к вопросу" loading="lazy" />`;
   const selected = new Set(state.answers[q.question_id] || []);
 
   const answersHtml = q.answers.map(a => {
