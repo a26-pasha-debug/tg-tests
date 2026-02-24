@@ -317,7 +317,7 @@ function renderQuestion() {
           value="${escapeAttr(aid)}"
           ${checked}
         />
-        ${escapeHtml(atext)}
+        <span class="answer-text">${escapeHtml(atext)}</span>
       </label>
     `;
   }).join("");
@@ -360,7 +360,7 @@ function renderQuestion() {
         <div class="timer" id="timer">${s.expires_ms ? fmtTime(state.expiresLocal - Date.now()) : "∞"}</div>
       </div>
 
-      ${qText ? `<div style="font-weight:700; margin-top:10px;">${escapeHtml(qText)}</div>` : ""}
+      ${qText ? `<div class="question-text">${escapeHtml(qText)}</div>` : ""}
       ${imgHtml}
 
       <div class="muted" style="margin-top:6px;">Баллы за вопрос: ${Number(q.points || 0)}</div>
