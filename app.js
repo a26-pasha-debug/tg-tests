@@ -433,25 +433,30 @@ function renderQuestion() {
 // ====== Submit & Results ======
 function renderSubmitResult(r) {
   stopTimer();
+
+  const dur = Number(r.duration_sec || 0);
+  const durText = dur ? fmtTime(dur * 1000) : "—"; // ММ:СС
+
   el("main").innerHTML = `
     <div class="card">
       <div style="font-weight:700; font-size:16px;">Результат</div>
-      <div class="muted" style="margin-top:6px;">
-        Статус: <b>${escapeHtml(r.status)}</b>${r.expired ? " (время истекло)" : ""}
-      </div>
+
       <div style="margin-top:10px;">
         Баллы: <b>${Number(r.score)}</b> / ${Number(r.max_score)} (${Number(r.percent)}%)
       </div>
-      <div class="muted" style="margin-top:6px;">
-        Длительность: ${Number(r.duration_sec)} сек · Попытка: ${Number(r.attempt_no)}
+
+      <div class="muted" style="margin-top:8px;">
+        Длительность: ${escapeHtml(durText)} · Попытка: ${Number(r.attempt_no)}
+        ${r.expired ? " · Время истекло" : ""}
       </div>
 
-      <div class="row" style="margin-top:12px;">
+      <div class="row" style="margin-top:14px;">
         <button class="btn secondary" id="btnToTests">К тестам</button>
         <button class="btn" id="btnToResults">Мои результаты</button>
       </div>
     </div>
   `;
+
   el("btnToTests").onclick = () => loadTests();
   el("btnToResults").onclick = () => loadResults();
 }
@@ -459,44 +464,56 @@ function renderSubmitResult(r) {
 function renderResultsList(results) {
   stopTimer();
 
-  if (!results || !results.length) {
+  const list = Array.isArray(results) ? [...results] : [];
+
+  // сортируем по дате (сначала новые)
+  list.sort((a, b) => Number(b.submit_ms || 0) - Number(a.submit_ms || 0));
+
+  if (!list.length) {
     el("main").innerHTML = `<div class="card">Результатов пока нет.</div>`;
     setActiveTab("results");
     return;
   }
 
-  const rows = results.map(r => {
-    const dt = r.submit_ms ? new Date(Number(r.submit_ms)).toLocaleString() : "";
+  const rows = list.map(r => {
+    const dt = r.submit_ms
+      ? new Date(Number(r.submit_ms)).toLocaleString("ru-RU")
+      : "";
+
+    const title = r.test_title || r.test_id || "";
+    const scoreText = `${Number(r.score || 0)}/${Number(r.max_score || 0)} (${Number(r.percent || 0)}%)`;
+
     return `
       <tr>
-        <td>${escapeHtml(r.test_title || r.test_id)}</td>
-        <td>${Number(r.attempt_no || 0)}</td>
-        <td>${escapeHtml(r.status || "")}</td>
-        <td>${Number(r.score || 0)}/${Number(r.max_score || 0)} (${Number(r.percent || 0)}%)</td>
-        <td>${Number(r.duration_sec || 0)}s</td>
-        <td>${escapeHtml(dt)}</td>
+        <td class="rt-test">${escapeHtml(title)}</td>
+        <td class="rt-attempt">${Number(r.attempt_no || 0)}</td>
+        <td class="rt-score">${escapeHtml(scoreText)}</td>
+        <td class="rt-date">${escapeHtml(dt)}</td>
       </tr>
     `;
   }).join("");
 
   el("main").innerHTML = `
     <div class="card">
-      <div style="font-weight:700; margin-bottom:8px;">Мои результаты</div>
-      <div style="overflow:auto;">
-        <table>
-          <thead>
-            <tr>
-              <th>Тест</th>
-              <th>#</th>
-              <th>Статус</th>
-              <th>Баллы</th>
-              <th>Время</th>
-              <th>Дата</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
+      <div style="font-weight:700; margin-bottom:10px;">Мои результаты</div>
+
+      <table class="results-table">
+        <colgroup>
+          <col style="width:34%">
+          <col style="width:10%">
+          <col style="width:26%">
+          <col style="width:30%">
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Тест</th>
+            <th>#</th>
+            <th>Баллы</th>
+            <th style="text-align:right;">Дата</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
     </div>
   `;
 
