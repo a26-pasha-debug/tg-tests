@@ -145,6 +145,45 @@ function stopTimer() {
   state.autoSubmitted = false;
 }
 
+// чтобы лоудер точно успевал отрисоваться до запроса
+function nextPaint() {
+  return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+}
+
+// ====== LOADER (Telegram-like) ======
+function injectLoaderStyles() {
+  if (document.getElementById("mlab_loader_styles")) return;
+
+  const style = document.createElement("style");
+  style.id = "mlab_loader_styles";
+  style.textContent = `
+    .mlab-loading-row{
+      display:flex;
+      align-items:center;
+      gap:10px;
+    }
+    .mlab-spinner{
+      width:18px;
+      height:18px;
+      border-radius:50%;
+      border:2px solid rgba(255,255,255,0.22);
+      border-top-color: var(--tg-theme-button-color, #2ea6ff);
+      animation: mlabSpin .8s linear infinite;
+      flex:0 0 auto;
+    }
+    @keyframes mlabSpin { to { transform: rotate(360deg); } }
+    .mlab-loading-title{
+      font-weight:700;
+      font-size:16px;
+      line-height:1.25;
+    }
+    .mlab-loading-sub{
+      margin-top:8px;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 // ====== API ======
 async function api(path, data = {}) {
   const webapp = tg();
@@ -199,8 +238,20 @@ async function apiRetry(path, data = {}, opts = {}) {
 }
 
 // ====== UI ======
-function renderLoading(title = "Загрузка...") {
-  el("main").innerHTML = `<div class="card"><div>${escapeHtml(title)}</div></div>`;
+function renderLoading(title = "Загрузка...", subtitle = "") {
+  el("main").innerHTML = `
+    <div class="card">
+      <div class="mlab-loading-row">
+        <div class="mlab-spinner" aria-hidden="true"></div>
+        <div class="mlab-loading-title">${escapeHtml(title)}</div>
+      </div>
+      ${
+        subtitle
+          ? `<div class="muted mlab-loading-sub">${escapeHtml(subtitle)}</div>`
+          : ""
+      }
+    </div>
+  `;
 }
 function renderError(err) {
   stopTimer();
@@ -226,6 +277,14 @@ function buildTestStats(tests, resultsRaw, userTelegramId) {
   const now = Date.now();
   const stats = {};
 
+  // time limits map (ms)
+  const timeLimitMs = {};
+  for (const t of tests || []) {
+    const tid = normId(t.test_id);
+    if (!tid) continue;
+    timeLimitMs[tid] = Math.max(0, toInt(t.time_limit_sec, 0)) * 1000;
+  }
+
   // init keys from tests
   for (const t of tests || []) {
     const tid = normId(t.test_id);
@@ -235,10 +294,8 @@ function buildTestStats(tests, resultsRaw, userTelegramId) {
       activeToken: null,
       finalized: new Set(),
       started: new Map(),
-
-      // две метрики, берём max (чтобы пережить дубликаты attempt_no или отсутствие session_token)
-      usedTokens: new Set(), // session_token / start_ms key
-      usedAttemptNos: new Set(), // attempt_no
+      usedTokens: new Set(),
+      usedAttemptNos: new Set(),
     };
   }
 
@@ -261,7 +318,6 @@ function buildTestStats(tests, resultsRaw, userTelegramId) {
     // filter by user if provided
     if (userTelegramId) {
       const rid = normId(r.telegram_id);
-      // иногда Sheets возвращает число как "123.0" — нормализуем грубо
       const uid = normId(userTelegramId).replace(/\.0$/, "");
       const rid2 = rid.replace(/\.0$/, "");
       if (rid2 && rid2 !== uid) continue;
@@ -271,7 +327,12 @@ function buildTestStats(tests, resultsRaw, userTelegramId) {
     if (!["started", "submitted", "timeout"].includes(st)) continue;
 
     const startMs = toInt(r.start_ms, 0);
-    const expiresMs = toInt(r.expires_ms, 0);
+
+    // IMPORTANT: если expires_ms пустой/0, но у теста есть лимит — считаем expires = start + limit
+    let expiresMs = toInt(r.expires_ms, 0);
+    if (!expiresMs && startMs && timeLimitMs[tid] > 0) {
+      expiresMs = startMs + timeLimitMs[tid];
+    }
 
     const tokenKey = normId(r.session_token) || (startMs ? `start:${String(startMs)}` : "");
     const attemptNo = toInt(r.attempt_no, 0);
@@ -296,7 +357,6 @@ function buildTestStats(tests, resultsRaw, userTelegramId) {
   for (const tid of Object.keys(stats)) {
     const usedByTokens = stats[tid].usedTokens.size;
     const usedByAttemptNo = stats[tid].usedAttemptNos.size;
-
     stats[tid].used = Math.max(usedByTokens, usedByAttemptNo);
 
     // detect active started attempt
@@ -340,23 +400,31 @@ function renderTests() {
       let used = Math.max(0, toInt(st.used, 0));
       used = Math.min(maxAtt, used);
 
-      // local progress
+      // --- LOCAL cleanup (важно для мобильного) ---
+      // UI "Продолжить" решает только сервер, но localStorage может оставлять мусор:
+      // чистим локальные токены, если сервер уже не считает их активными/они финализированы
       const localToken = getActiveToken(tid);
-      let localValid = false;
-
       if (localToken) {
-        const prog = loadProgress(localToken);
-        if (prog && typeof prog === "object") localValid = true;
-
-        // если сервер говорит, что токен уже submitted/timeout — чистим localStorage
+        // если сервер финализировал — чистим
         if (st.finalized && st.finalized.has(localToken)) {
           clearProgress(localToken);
           clearActiveToken(tid);
-          localValid = false;
+        } else {
+          // если сервер говорит, что активный токен другой/нет активного — локальный "active" считается протухшим
+          if (st.activeToken && st.activeToken !== localToken) {
+            clearProgress(localToken);
+            clearActiveToken(tid);
+          }
+          // если попытки кончились и активного по серверу нет — тоже чистим
+          if (!st.activeToken && used >= maxAtt) {
+            clearProgress(localToken);
+            clearActiveToken(tid);
+          }
         }
       }
 
-      const hasActive = !!st.activeToken || localValid;
+      // только сервер решает есть ли активная попытка
+      const hasActive = !!st.activeToken;
 
       // ВАЖНО: если попытки кончились и активной попытки нет — кнопки НЕ должно быть
       const attemptsLeft = maxAtt - used;
@@ -615,19 +683,18 @@ async function loadTests() {
   try {
     stopTimer();
     setStatus("");
+
     renderLoading("Загрузка тестов...");
+    await nextPaint();
 
     // 1) тесты
     const testsRes = await apiRetry(EP.tests, {}, { retries: 1, baseDelayMs: 200 });
-    if (!testsRes?.ok) {
-      throw new Error(testsRes?.error || "Не удалось загрузить тесты");
-    }
+    if (!testsRes?.ok) throw new Error(testsRes?.error || "Не удалось загрузить тесты");
 
     state.user = testsRes.user;
     state.tests = testsRes.tests || [];
 
-    // 2) результаты (ВАЖНО: без этого нельзя корректно рисовать попытки и кнопку)
-    // делаем ретраи, чтобы не было состояния "0/2 но сервер говорит попытки закончились"
+    // 2) результаты (без этого нельзя корректно рисовать попытки/кнопку)
     const resultsRes = await apiRetry(EP.results, {}, { retries: 2, baseDelayMs: 250 });
     if (!resultsRes?.ok) {
       throw new Error(resultsRes?.error || "Не удалось загрузить результаты для подсчёта попыток");
@@ -649,7 +716,9 @@ async function startTest(testId) {
   try {
     stopTimer();
     setStatus("");
+
     renderLoading("Старт теста...");
+    await nextPaint();
 
     const r = await api(EP.start, { testId });
 
@@ -657,10 +726,8 @@ async function startTest(testId) {
       const msg = String(r?.error || "Не удалось стартовать тест");
 
       // Мягко обрабатываем "Попытки закончились":
-      // - не показываем красную ошибку
-      // - просто обновляем список тестов, чтобы кнопка исчезла и стало 2/2
+      // обновляем список тестов -> кнопка исчезнет, будет 2/2
       if (/попытки\s+закончились/i.test(msg)) {
-        setStatus("Попытки закончились");
         await loadTests();
         return;
       }
@@ -725,13 +792,12 @@ async function submitCurrent(auto = false) {
     const s = state.session;
 
     stopTimer();
+    setStatus("");
 
-    // УБРАЛИ setStatus — чтобы не было дубля
     renderLoading(
-      auto
-        ? "Время истекло — отправляем ответы..."
-        : "Ответы отправляются..."
+      auto ? "Время истекло — отправляем ответы..." : "Ответы отправляются..."
     );
+    await nextPaint();
 
     const r = await api(EP.submit, {
       testId: s.test.test_id,
@@ -743,7 +809,6 @@ async function submitCurrent(auto = false) {
     if (!r.ok) throw new Error(r.error || "Не удалось отправить ответы");
 
     clearSessionLocal(s);
-
     renderSubmitResult(r);
   } catch (e) {
     renderError(e);
@@ -779,7 +844,9 @@ async function loadResults() {
   try {
     stopTimer();
     setStatus("");
+
     renderLoading("Загрузка результатов...");
+    await nextPaint();
 
     const r = await apiRetry(EP.results, {}, { retries: 2, baseDelayMs: 250 });
     if (!r?.ok) throw new Error(r?.error || "Не удалось загрузить результаты");
@@ -836,6 +903,8 @@ function renderResultsList(results) {
 
 // ====== INIT ======
 (function init() {
+  injectLoaderStyles();
+
   const webapp = tg();
   if (webapp) {
     webapp.ready();
