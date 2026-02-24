@@ -356,7 +356,7 @@ function renderTests() {
         }
       }
 
-      const hasActive = !!st.activeToken; // только сервер решает есть ли попытка
+      const hasActive = !!st.activeToken || localValid;
 
       // ВАЖНО: если попытки кончились и активной попытки нет — кнопки НЕ должно быть
       const attemptsLeft = maxAtt - used;
