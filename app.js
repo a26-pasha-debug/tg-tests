@@ -725,8 +725,13 @@ async function submitCurrent(auto = false) {
     const s = state.session;
 
     stopTimer();
-    setStatus(auto ? "Время истекло — отправляем ответы..." : "Ответы отправляются...");
-    renderLoading(auto ? "Время истекло — отправляем ответы..." : "Ответы отправляются...");
+
+    // УБРАЛИ setStatus — чтобы не было дубля
+    renderLoading(
+      auto
+        ? "Время истекло — отправляем ответы..."
+        : "Ответы отправляются..."
+    );
 
     const r = await api(EP.submit, {
       testId: s.test.test_id,
@@ -735,14 +740,12 @@ async function submitCurrent(auto = false) {
       answers: state.answers,
     });
 
-    if (!r?.ok) throw new Error(r?.error || "Не удалось отправить ответы");
+    if (!r.ok) throw new Error(r.error || "Не удалось отправить ответы");
 
     clearSessionLocal(s);
 
-    setStatus("");
     renderSubmitResult(r);
   } catch (e) {
-    setStatus("");
     renderError(e);
   }
 }
