@@ -146,3 +146,20 @@ th,td{ padding:8px; border-bottom:1px solid rgba(0,0,0,.08); text-align:left; }
 @keyframes spin{
   to { transform: rotate(360deg); }
 }
+
+.results-table{
+  width:100%;
+  table-layout: fixed;
+}
+
+.results-table th,
+.results-table td{
+  font-size: 13px;
+  vertical-align: top;
+  white-space: normal;      /* разрешаем перенос строк */
+  word-break: break-word;   /* длинные слова/даты переносим */
+}
+
+.results-table .rt-date{
+  text-align: right;
+}
