@@ -109,6 +109,10 @@ function escapeHtml(s) {
 function normId(x) {
   return String(x ?? "").trim();
 }
+function toInt(x, def = 0) {
+  const n = Number(String(x ?? "").trim());
+  return Number.isFinite(n) ? Math.trunc(n) : def;
+}
 function fmtTime(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
   const mm = String(Math.floor(s / 60)).padStart(2, "0");
@@ -135,7 +139,6 @@ function fmtDate(ms) {
 function clamp(n, a, b) {
   return Math.max(a, Math.min(b, n));
 }
-
 function stopTimer() {
   clearInterval(state.timerId);
   state.timerId = null;
@@ -153,6 +156,7 @@ async function api(path, data = {}) {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=UTF-8" },
     body: JSON.stringify(payload),
+    cache: "no-store",
   });
 
   const text = await res.text();
@@ -176,6 +180,24 @@ async function api(path, data = {}) {
   return json;
 }
 
+async function apiRetry(path, data = {}, opts = {}) {
+  const retries = Math.max(0, toInt(opts.retries, 2));
+  const baseDelay = Math.max(50, toInt(opts.baseDelayMs, 250));
+
+  let lastErr = null;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await api(path, data);
+    } catch (e) {
+      lastErr = e;
+      if (i === retries) break;
+      const delay = baseDelay * Math.pow(2, i);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw lastErr || new Error("API error");
+}
+
 // ====== UI ======
 function renderLoading(title = "Загрузка...") {
   el("main").innerHTML = `<div class="card"><div>${escapeHtml(title)}</div></div>`;
@@ -197,11 +219,14 @@ function setActiveTab(tab) {
   el("tabResults").classList.toggle("active", tab === "results");
 }
 
-// ====== build stats correctly (ignore started if finalized for same token) ======
+// ====== build stats (server-like) ======
+// ВАЖНО: считаем попытки так же, как сервер (tg-start):
+// attempts_used = число уникальных попыток (по session_token, а если его нет — по start_ms)
 function buildTestStats(tests, resultsRaw, userTelegramId) {
   const now = Date.now();
   const stats = {};
 
+  // init keys from tests
   for (const t of tests || []) {
     const tid = normId(t.test_id);
     if (!tid) continue;
@@ -210,50 +235,78 @@ function buildTestStats(tests, resultsRaw, userTelegramId) {
       activeToken: null,
       finalized: new Set(),
       started: new Map(),
-      usedSet: new Set(),
+
+      // две метрики, берём max (чтобы пережить дубликаты attempt_no или отсутствие session_token)
+      usedTokens: new Set(), // session_token / start_ms key
+      usedAttemptNos: new Set(), // attempt_no
     };
   }
 
   for (const r of resultsRaw || []) {
     const tid = normId(r.test_id);
-    if (!tid || !stats[tid]) continue;
+    if (!tid) continue;
 
-    if (userTelegramId) {
-      const rid = normId(r.telegram_id);
-      if (rid && rid !== normId(userTelegramId)) continue;
+    // если теста нет в списке (на всякий случай) — добавим
+    if (!stats[tid]) {
+      stats[tid] = {
+        used: 0,
+        activeToken: null,
+        finalized: new Set(),
+        started: new Map(),
+        usedTokens: new Set(),
+        usedAttemptNos: new Set(),
+      };
     }
 
-    const token = normId(r.session_token) || (r.start_ms ? `start:${normId(r.start_ms)}` : "");
-    if (!token) continue;
+    // filter by user if provided
+    if (userTelegramId) {
+      const rid = normId(r.telegram_id);
+      // иногда Sheets возвращает число как "123.0" — нормализуем грубо
+      const uid = normId(userTelegramId).replace(/\.0$/, "");
+      const rid2 = rid.replace(/\.0$/, "");
+      if (rid2 && rid2 !== uid) continue;
+    }
 
     const st = String(r.status || "").trim().toLowerCase();
     if (!["started", "submitted", "timeout"].includes(st)) continue;
 
-    const attemptNo = Number(r.attempt_no || 0) || 0;
-    if (attemptNo > 0) stats[tid].usedSet.add(attemptNo);
-    else stats[tid].usedSet.add(token);
+    const startMs = toInt(r.start_ms, 0);
+    const expiresMs = toInt(r.expires_ms, 0);
+
+    const tokenKey = normId(r.session_token) || (startMs ? `start:${String(startMs)}` : "");
+    const attemptNo = toInt(r.attempt_no, 0);
+
+    if (tokenKey) stats[tid].usedTokens.add(tokenKey);
+    if (attemptNo > 0) stats[tid].usedAttemptNos.add(String(attemptNo));
 
     if (st === "submitted" || st === "timeout") {
-      stats[tid].finalized.add(token);
+      if (tokenKey) stats[tid].finalized.add(tokenKey);
     }
 
     if (st === "started") {
-      const rec = stats[tid].started.get(token) || { startMs: 0, expiresMs: 0 };
-      rec.startMs = Math.max(rec.startMs, Number(r.start_ms || 0) || 0);
-      rec.expiresMs = Math.max(rec.expiresMs, Number(r.expires_ms || 0) || 0);
-      stats[tid].started.set(token, rec);
+      if (tokenKey) {
+        const rec = stats[tid].started.get(tokenKey) || { startMs: 0, expiresMs: 0 };
+        rec.startMs = Math.max(rec.startMs, startMs);
+        rec.expiresMs = Math.max(rec.expiresMs, expiresMs);
+        stats[tid].started.set(tokenKey, rec);
+      }
     }
   }
 
   for (const tid of Object.keys(stats)) {
-    stats[tid].used = stats[tid].usedSet.size;
+    const usedByTokens = stats[tid].usedTokens.size;
+    const usedByAttemptNo = stats[tid].usedAttemptNos.size;
 
+    stats[tid].used = Math.max(usedByTokens, usedByAttemptNo);
+
+    // detect active started attempt
     let bestToken = null;
     let bestStart = 0;
 
     for (const [token, rec] of stats[tid].started.entries()) {
       if (stats[tid].finalized.has(token)) continue;
-      // если есть expires_ms — проверяем, не истекло ли
+
+      // если expires есть — и истекло, не активно
       if (rec.expiresMs && rec.expiresMs <= now) continue;
 
       if (!bestToken || rec.startMs > bestStart) {
@@ -275,10 +328,17 @@ function renderTests() {
   const items = tests
     .map((t) => {
       const tid = normId(t.test_id);
-      const maxAtt = Math.max(1, Number(t.max_attempts || 1));
+      const maxAtt = Math.max(1, toInt(t.max_attempts, 1));
 
-      const st = stats[tid] || { used: 0, activeToken: null, finalized: new Set() };
-      const used = Math.min(maxAtt, Math.max(0, Number(st.used || 0)));
+      const st = stats[tid] || {
+        used: 0,
+        activeToken: null,
+        finalized: new Set(),
+      };
+
+      // used attempts (clamped)
+      let used = Math.max(0, toInt(st.used, 0));
+      used = Math.min(maxAtt, used);
 
       // local progress
       const localToken = getActiveToken(tid);
@@ -298,13 +358,11 @@ function renderTests() {
 
       const hasActive = !!st.activeToken || localValid;
 
-      // показываем кнопку:
-      // - если есть активная попытка -> "Продолжить"
-      // - иначе если попытки еще есть -> "Начать"
-      // - иначе кнопки нет
-      const canStartNew = used < maxAtt;
-      const showButton = hasActive || canStartNew;
+      // ВАЖНО: если попытки кончились и активной попытки нет — кнопки НЕ должно быть
+      const attemptsLeft = maxAtt - used;
+      const canStartNew = attemptsLeft > 0;
 
+      const showButton = hasActive || canStartNew;
       const btnLabel = hasActive ? "Продолжить" : "Начать";
 
       const timeText = t.time_limit_sec
@@ -559,25 +617,25 @@ async function loadTests() {
     setStatus("");
     renderLoading("Загрузка тестов...");
 
-    const [rt, rr] = await Promise.allSettled([api(EP.tests, {}), api(EP.results, {})]);
-
-    if (rt.status !== "fulfilled" || !rt.value?.ok) {
-      throw new Error(rt.status === "rejected" ? rt.reason?.message : rt.value?.error || "Не удалось загрузить тесты");
+    // 1) тесты
+    const testsRes = await apiRetry(EP.tests, {}, { retries: 1, baseDelayMs: 200 });
+    if (!testsRes?.ok) {
+      throw new Error(testsRes?.error || "Не удалось загрузить тесты");
     }
 
-    const testsRes = rt.value;
     state.user = testsRes.user;
     state.tests = testsRes.tests || [];
 
-    let resultsRaw = [];
-    if (rr.status === "fulfilled" && rr.value?.ok) {
-      resultsRaw = rr.value.results || [];
+    // 2) результаты (ВАЖНО: без этого нельзя корректно рисовать попытки и кнопку)
+    // делаем ретраи, чтобы не было состояния "0/2 но сервер говорит попытки закончились"
+    const resultsRes = await apiRetry(EP.results, {}, { retries: 2, baseDelayMs: 250 });
+    if (!resultsRes?.ok) {
+      throw new Error(resultsRes?.error || "Не удалось загрузить результаты для подсчёта попыток");
     }
-    state.resultsRaw = resultsRaw;
+    state.resultsRaw = resultsRes.results || [];
 
     state.testStats = buildTestStats(state.tests, state.resultsRaw, state.user?.telegram_id);
 
-    // показываем только имя
     el("userBadge").textContent = state.user?.full_name ? `${state.user.full_name}` : "";
 
     renderTests();
@@ -594,13 +652,28 @@ async function startTest(testId) {
     renderLoading("Старт теста...");
 
     const r = await api(EP.start, { testId });
-    if (!r.ok) throw new Error(r.error || "Не удалось стартовать тест");
+
+    if (!r?.ok) {
+      const msg = String(r?.error || "Не удалось стартовать тест");
+
+      // Мягко обрабатываем "Попытки закончились":
+      // - не показываем красную ошибку
+      // - просто обновляем список тестов, чтобы кнопка исчезла и стало 2/2
+      if (/попытки\s+закончились/i.test(msg)) {
+        setStatus("Попытки закончились");
+        await loadTests();
+        return;
+      }
+
+      throw new Error(msg);
+    }
 
     state.session = r;
 
     const token = normId(r.session_token);
     const tid = normId(r.test?.test_id || testId);
 
+    // если был другой activeToken — чистим его прогресс (чтобы не путать)
     const prevToken = getActiveToken(tid);
     if (prevToken && prevToken !== token) {
       clearProgress(prevToken);
@@ -662,7 +735,7 @@ async function submitCurrent(auto = false) {
       answers: state.answers,
     });
 
-    if (!r.ok) throw new Error(r.error || "Не удалось отправить ответы");
+    if (!r?.ok) throw new Error(r?.error || "Не удалось отправить ответы");
 
     clearSessionLocal(s);
 
@@ -705,8 +778,8 @@ async function loadResults() {
     setStatus("");
     renderLoading("Загрузка результатов...");
 
-    const r = await api(EP.results, {});
-    if (!r.ok) throw new Error(r.error || "Не удалось загрузить результаты");
+    const r = await apiRetry(EP.results, {}, { retries: 2, baseDelayMs: 250 });
+    if (!r?.ok) throw new Error(r?.error || "Не удалось загрузить результаты");
 
     renderResultsList(r.results || []);
     setActiveTab("results");
