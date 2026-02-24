@@ -325,21 +325,19 @@ function renderQuestion() {
   const qText = String(q.question_text || "").trim();
   const imgUrl = normalizeImageUrl(q.image_url || "");
   const imgHtml = imgUrl
-    ? `
-      <div class="q-media">
-        <img
-          class="q-img"
-          src="${escapeAttr(imgUrl)}"
-          alt=""
-          loading="eager"
-          decoding="async"
-          referrerpolicy="no-referrer"
-          crossorigin="anonymous"
-          onerror="(function(img){ try{ const box = img.closest('.q-media'); if(box){ box.innerHTML='<div class=muted style=padding:12px>Не удалось загрузить изображение</div>'; } }catch(e){} })(this)"
-        />
-      </div>
-    `
-    : "";
+  ? `
+    <div class="q-media">
+      <img
+        class="q-img"
+        src="${escapeAttr(imgUrl)}"
+        alt=""
+        loading="lazy"
+        decoding="async"
+        onerror="(function(img){ try{ const box = img.closest('.q-media'); if(box){ box.innerHTML='<div class=muted style=padding:12px>Не удалось загрузить изображение</div><div class=muted style=padding:0 12px 12px><a href=&quot;${escapeAttr(imgUrl)}&quot; target=_blank rel=noopener>Открыть изображение</a></div>'; } }catch(e){} })(this)"
+      />
+    </div>
+  `
+  : "";
 
   const progress = `${state.qIndex + 1} / ${s.questions.length}`;
 
